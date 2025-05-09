@@ -1,0 +1,101 @@
+<?php
+
+return [
+
+    /*
+    |--------------------------------------------------------------------------
+    | Default Mailer
+    |--------------------------------------------------------------------------
+    |
+    | This option controls the default mailer that is used to send any email
+    | messages sent by your application. Alternative mailers may be setup
+    | and used as needed; however, this mailer will be used by default.
+    | If null, it will use the default mailer defined in config/mail.php
+    |
+    */
+
+    'default_mailer' => null,
+
+    /*
+    |--------------------------------------------------------------------------
+    | Default From Address
+    |--------------------------------------------------------------------------
+    |
+    | You may wish for all e-mails sent by your application to be sent from
+    | the same address. Here, you may specify a name and address that is
+    | used globally for all e-mails that are sent by your application.
+    | If null, it will use the default 'from' address from config/mail.php
+    |
+    */
+
+    'from' => [
+        'address' => env('MAIL_FROM_ADDRESS', 'hello@example.com'),
+        'name' => env('MAIL_FROM_NAME', 'Example'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Logging Configuration
+    |--------------------------------------------------------------------------
+    |
+    | Here you may configure the logging options for email events.
+    | Supported drivers: "log", "database"
+    |
+    */
+
+    'logging' => [
+        'enabled' => true,
+        'driver' => 'database', // 'log', 'database'
+        'log_channel' => env('MAIL_LOG_CHANNEL', 'stack'),
+        'database' => [
+            'table' => 'email_logs',
+            'connection' => null, // null = default connection
+            'model' => null, // Optional: custom model class
+            'columns' => [
+                'mailer' => 'mailer',
+                'from' => 'from_address',
+                'to' => 'to_address',
+                'cc' => 'cc_address',
+                'bcc' => 'bcc_address',
+                'subject' => 'subject',
+                'view' => 'view',
+                'html_content' => 'body',
+                'view_data' => 'view_data',
+                'placeholders' => 'placeholders',
+                'attachments' => 'attachments',
+                'sent_at' => 'sent_at',
+                'status' => 'status',
+                'error' => 'error_message',
+            ],
+            'tables' => [
+                'email_logs' => 'email_logs',
+                'email_templates' => 'email_templates',
+                'email_template_versions' => 'email_template_versions',
+            ],
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Default Queue Connection
+    |--------------------------------------------------------------------------
+    |
+    | Specify the default queue connection name to use when queuing emails.
+    | If null, the default queue connection from config/queue.php will be used.
+    |
+    */
+
+    'default_queue_connection' => null,
+
+    /*
+    |--------------------------------------------------------------------------
+    | Default Queue Name
+    |--------------------------------------------------------------------------
+    |
+    | Specify the default queue name to use when queuing emails.
+    | If null, the default queue from config/queue.php will be used.
+    |
+    */
+
+    'default_queue_name' => null,
+];
