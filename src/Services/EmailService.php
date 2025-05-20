@@ -402,15 +402,40 @@ class EmailService implements EmailBuilderContract
         $logUuid = (string) Str::uuid();
         $mailable = $this->buildMailable($logUuid);
         
+        // Prepare event data
+        $eventData = [
+            'uuid' => $logUuid,
+            'mailable' => $mailable,
+            'mailer' => $this->mailerName,
+            'from' => $this->from,
+            'to' => $this->to,
+            'cc' => $this->cc,
+            'bcc' => $this->bcc,
+            'subject' => $this->subject,
+            'template_name' => $this->templateName,
+            'view' => $this->view,
+            'html_content' => $this->htmlContent,
+            'view_data' => $this->viewData,
+            'placeholders' => $this->placeholders,
+            'attachments' => $this->prepareAttachmentsForStorage(),
+            'sent_at' => now(),
+            'status' => 'sending'
+        ];
+        
+        // Dispatch EmailSending event before attempting to send
+        Event::dispatch(new EmailSending($eventData));
+        
         // Send email immediately using the configured mailer
         try {
             $this->mailer->mailer($this->mailerName)->send($mailable);
             Log::info("Email sent successfully via provider: {$this->mailerName}", ['logUuid' => $logUuid]);
+            Event::dispatch(new EmailSent($eventData));
         } catch (\Exception $e) {
             Log::error("Failed to send email via provider: {$this->mailerName}. Error: {$e->getMessage()}", [
                 'logUuid' => $logUuid,
                 'exception' => $e
             ]);
+            Event::dispatch(new EmailFailed(array_merge($eventData, ['exception' => $e])));
             throw $e;
         } finally {
             $this->resetState();
