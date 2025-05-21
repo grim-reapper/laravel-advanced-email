@@ -22,7 +22,7 @@ return new class extends Migration
             $table->string('subject');
             $table->string('template_name')->nullable();
             $table->string('view')->nullable();
-            $table->longText('html_content');
+            $table->longText('html_content')->nullable();
             $table->json('view_data')->nullable();
             $table->json('placeholders')->nullable();
             $table->json('attachments')->nullable();
