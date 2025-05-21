@@ -15,8 +15,8 @@ return new class extends Migration
             $table->id();
             $table->uuid('uuid')->unique();
             $table->string('mailer')->nullable();
-            $table->json('from');
-            $table->json('to');
+            $table->json('from')->nullable();
+            $table->json('to')->nullable();
             $table->json('cc')->nullable();
             $table->json('bcc')->nullable();
             $table->string('subject');
