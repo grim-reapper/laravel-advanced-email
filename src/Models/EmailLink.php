@@ -12,15 +12,15 @@ class EmailLink extends Model
     protected $table = 'email_links';
 
     protected $fillable = [
+        'uuid',
         'email_log_id',
         'original_url',
-        'tracking_url',
         'click_count',
-        'last_clicked_at',
+        'clicked_at',
     ];
 
     protected $casts = [
-        'last_clicked_at' => 'datetime',
+        'clicked_at' => 'datetime',
         'click_count' => 'integer',
     ];
 

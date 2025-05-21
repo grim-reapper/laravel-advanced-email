@@ -8,7 +8,7 @@ use GrimReapper\AdvancedEmail\Http\Controllers\EmailReportController;
 Route::get('/track/open/{uuid}', [TrackingController::class, 'trackOpen'])
     ->name('opens');
 
-Route::get('/track/click/{uuid}/{link_id}', [TrackingController::class, 'trackClick'])
+Route::get('/track/click/{uuid}/{link_id}', [TrackingController::class, 'trackLinkClick'])
     ->name('clicks');
 
 // Reporting Routes (Optional - Requires Authentication/Authorization)

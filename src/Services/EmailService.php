@@ -400,6 +400,28 @@ class EmailService implements EmailBuilderContract
         
         // Generate a UUID for logging purposes
         $logUuid = (string) Str::uuid();
+
+        // Create initial log entry in the database before building the mailable
+        $logEntry = \GrimReapper\AdvancedEmail\Models\EmailLog::create([
+            'uuid' => $logUuid,
+            'status' => 'pending', // Initial status
+            'mailer' => $this->mailerName,
+            'from' => $this->from,
+            'to' => $this->formatRecipients($this->to),
+            'cc' => $this->formatRecipients($this->cc),
+            'bcc' => $this->bcc,
+            'subject' => $this->subject,
+            'template_name' => $this->templateName,
+            'view' => $this->view,
+            'html_content' => $this->htmlContent,
+            'view_data' => $this->viewData,
+            'placeholders' => $this->placeholders,
+            'attachments' => $this->prepareAttachmentsForStorage(),
+            // Add other relevant fields if necessary
+            'scheduled_at' => $this->scheduledAt, // Include scheduled_at for consistency, even if null
+            'expires_at' => $this->expiresAt, // Include expires_at for consistency, even if null
+        ]);
+
         $mailable = $this->buildMailable($logUuid);
         
         // Prepare event data
@@ -474,6 +496,28 @@ class EmailService implements EmailBuilderContract
         // We generate the UUID here and pass it to the job.
         // The job will be responsible for including it in the log data when it runs.
         $logUuid = (string) Str::uuid();
+
+        // Create initial log entry in the database before building the mailable
+        $logEntry = \GrimReapper\AdvancedEmail\Models\EmailLog::create([
+            'uuid' => $logUuid,
+            'status' => 'pending', // Initial status
+            'mailer' => $this->mailerName,
+            'from' => $this->from,
+            'to' => $this->formatRecipients($this->to),
+            'cc' => $this->formatRecipients($this->cc),
+            'bcc' => $this->bcc,
+            'subject' => $this->subject,
+            'template_name' => $this->templateName,
+            'view' => $this->view,
+            'html_content' => $this->htmlContent,
+            'view_data' => $this->viewData,
+            'placeholders' => $this->placeholders,
+            'attachments' => $this->prepareAttachmentsForStorage(),
+            // Add other relevant fields if necessary
+            'scheduled_at' => $this->scheduledAt, // Include scheduled_at for consistency, even if null
+            'expires_at' => $this->expiresAt, // Include expires_at for consistency, even if null
+        ]);
+
         $mailable = $this->buildMailable($logUuid);
 
         // Pass the logUuid to the job so it can be logged when the job runs.
@@ -565,13 +609,10 @@ class EmailService implements EmailBuilderContract
         }
         
         if ($this->view) {
-            // View takes precedence over template HTML content if both are somehow set
-            $mailable->view($this->view, $this->viewData);
-        // Blade rendering is now handled after this block
-            // Optionally add text part from template if available and needed
-            // if ($this->textContent) {
-            //     $mailable->text($this->processPlaceholders($this->textContent));
-            // }
+            // Render the view to HTML content for processing
+            $processedHtmlContent = view($this->view, $this->viewData)->render();
+            // Process any placeholders in the rendered content
+            $processedHtmlContent = $this->processPlaceholders($processedHtmlContent);
         }
 
         foreach ($this->attachments as $attachment) {
@@ -650,7 +691,7 @@ class EmailService implements EmailBuilderContract
      * @return string|null The rendered HTML content or null on failure.
      * @throws \Throwable If template loading or rendering fails.
      */
-    public function preview(): ?string
+    public function preview(): void
     {
         // Load template if name is provided
         if ($this->templateName) {
@@ -659,11 +700,11 @@ class EmailService implements EmailBuilderContract
 
         // Process placeholders for HTML content *after* potentially loading from template
         $processedHtmlContent = $this->htmlContent ? $this->processPlaceholders($this->htmlContent) : null;
-
+        
         if ($this->view) {
             // Render view if specified (takes precedence)
             try {
-                return View::make($this->view, $this->viewData)->render();
+                echo View::make($this->view, $this->viewData)->render();
             } catch (\Throwable $e) {
                 Log::error("Blade view rendering failed for view '{$this->view}': " . $e->getMessage());
                 throw $e;
@@ -688,7 +729,7 @@ class EmailService implements EmailBuilderContract
                 // Link processing and tracking pixel injection are skipped in preview mode.
 
                 $this->resetState(); // Reset state after preview
-                return $renderedHtml;
+                echo $renderedHtml;
             } catch (\Throwable $e) {
                 Log::error("Blade rendering failed for template '{$this->templateName}' during preview: " . $e->getMessage());
                 $this->resetState(); // Reset state even on failure
@@ -697,7 +738,6 @@ class EmailService implements EmailBuilderContract
         } else {
             Log::warning("Preview requested but no view or HTML content is available.");
             $this->resetState();
-            return null; // Or throw an exception?
         }
     }
 
@@ -816,7 +856,7 @@ class EmailService implements EmailBuilderContract
 
         foreach ($links as $link) {
             $originalUrl = $link->getAttribute('href');
-
+            
             // Skip empty, mailto, tel, or anchor links
             if (empty($originalUrl) || str_starts_with($originalUrl, '#') || str_starts_with($originalUrl, 'mailto:') || str_starts_with($originalUrl, 'tel:')) {
                 continue;
@@ -833,9 +873,8 @@ class EmailService implements EmailBuilderContract
                 }
                 $logId = $logEntry->id;
             }
-
+            
             $linkUuid = (string) Str::uuid();
-
             // Store the link information
             try {
                 EmailLink::create([

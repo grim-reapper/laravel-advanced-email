@@ -48,18 +48,19 @@ class TrackingController extends Controller
     /**
      * Handle the tracking of an email link click event.
      *
+     * @param string $uuid The UUID of the email log.
      * @param string $linkToken The unique token identifying the link.
      * @return \Illuminate\Http\RedirectResponse
      */
-    public function trackLinkClick(string $linkToken)
+    public function trackLinkClick(string $uuid, string $linkToken)
     {
         try {
             // Find the email link by its unique tracking token
-            $emailLink = EmailLink::where('tracking_token', $linkToken)->firstOrFail();
+            $emailLink = EmailLink::where('uuid', $linkToken)->firstOrFail();
 
             // Increment click count and update last clicked timestamp
             $emailLink->increment('click_count');
-            $emailLink->last_clicked_at = Carbon::now();
+            $emailLink->clicked_at = Carbon::now();
             $emailLink->save();
 
             // Redirect the user to the original URL

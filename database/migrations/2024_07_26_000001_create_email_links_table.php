@@ -22,6 +22,7 @@ return new class extends Migration
                 $table->uuid('uuid')->unique(); // Unique identifier for the link
                 $table->unsignedBigInteger('email_log_id');
                 $table->text('original_url');
+                $table->integer('click_count')->default(0);
                 $table->timestamp('clicked_at')->nullable();
                 $table->timestamps();
 
