@@ -51,6 +51,7 @@ class EmailService implements EmailBuilderContract
     protected array $placeholders = [];
     protected array $placeholderPatterns = [];
     protected ?string $templateName = null; // Added property to store template name
+    protected bool $isContentFromDatabaseTemplate = false;
     
     // Scheduling properties
     protected ?\DateTime $scheduledAt = null;
@@ -227,6 +228,7 @@ class EmailService implements EmailBuilderContract
 
     public function view(string $view, array $data = []): static
     {
+        $this->isContentFromDatabaseTemplate = false;
         $this->view = $view;
         $this->viewData = $data;
         $this->htmlContent = null; // View takes precedence
@@ -235,6 +237,7 @@ class EmailService implements EmailBuilderContract
 
     public function html(string $htmlContent, array $placeholders = []): static
     {
+        $this->isContentFromDatabaseTemplate = false;
         $this->htmlContent = $htmlContent;
         $this->placeholders = $placeholders;
         $this->view = null; // HTML content takes precedence
@@ -647,7 +650,10 @@ class EmailService implements EmailBuilderContract
                 $processedHtmlContent = $dom->saveHTML();
                 
                 // Now render through Blade
-                $renderedHtml = Blade::render($processedHtmlContent, $this->viewData, true); // Pass true to delete cache
+                $renderedHtml = $processedHtmlContent; // Default to processed content
+                if (!$this->isContentFromDatabaseTemplate && $processedHtmlContent) { // Only Blade render if not from DB template AND content exists
+                    $renderedHtml = Blade::render($processedHtmlContent, $this->viewData, true); // Pass true to delete cache
+                }
                 
                 // Process links for tracking if enabled and we have a log UUID
                 if ($logUuid && config('advanced_email.tracking.clicks.enabled')) {
@@ -724,7 +730,10 @@ class EmailService implements EmailBuilderContract
                 $processedHtmlContent = $dom->saveHTML();
                 
                 // Now render through Blade
-                $renderedHtml = Blade::render($processedHtmlContent, $this->viewData, true); // Pass true to delete cache
+                $renderedHtml = $processedHtmlContent; // Default to processed content
+                if (!$this->isContentFromDatabaseTemplate && $processedHtmlContent) { // Only Blade render if not from DB template AND content exists
+                    $renderedHtml = Blade::render($processedHtmlContent, $this->viewData, true); // Pass true to delete cache
+                }
 
                 // Link processing and tracking pixel injection are skipped in preview mode.
 
@@ -813,6 +822,7 @@ class EmailService implements EmailBuilderContract
             }
             if ($this->htmlContent === null && $this->view === null) {
                 $this->htmlContent = $activeVersion->html_content;
+                $this->isContentFromDatabaseTemplate = true;
                 // Optionally load text content if needed by GenericMailable or config
                 // $this->textContent = $activeVersion->text_content;
             }
@@ -928,6 +938,7 @@ class EmailService implements EmailBuilderContract
         $this->mailerName = config('mail.default');
         $this->placeholders = [];
         $this->templateName = null; // Reset template name
+        $this->isContentFromDatabaseTemplate = false;
         
         // Reset scheduling properties
         $this->scheduledAt = null;
