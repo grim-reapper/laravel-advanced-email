@@ -874,6 +874,13 @@ class EmailService implements EmailBuilderContract
                 $logId = $logEntry->id;
             }
             
+            // Validate URL scheme
+            $scheme = parse_url($originalUrl, PHP_URL_SCHEME);
+            if (!in_array(strtolower($scheme ?? ''), ['http', 'https'])) {
+                Log::warning("Invalid or disallowed URL scheme in link: {$originalUrl}");
+                continue; // Skip this link
+            }
+            
             $linkUuid = (string) Str::uuid();
             // Store the link information
             try {
