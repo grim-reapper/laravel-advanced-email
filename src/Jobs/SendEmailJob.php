@@ -75,6 +75,7 @@ class SendEmailJob implements ShouldQueue
                     Log::debug("Attempting to send email via provider: {$provider}", ['logUuid' => $this->logUuid]);
                     Mail::mailer($provider)->send($this->mailable);
                     Log::info("Email sent successfully via provider: {$provider}", ['logUuid' => $this->logUuid]);
+
                     $lastException = null; // Clear exception on success
                     break; // Exit loop on successful send
                 } catch (Exception $e) {

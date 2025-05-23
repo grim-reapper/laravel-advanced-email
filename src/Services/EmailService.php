@@ -29,6 +29,8 @@ use GrimReapper\AdvancedEmail\Models\EmailLink;
 use GrimReapper\AdvancedEmail\Models\EmailTemplate;
 use GrimReapper\AdvancedEmail\Models\EmailTemplateVersion;
 use GrimReapper\AdvancedEmail\Models\ScheduledEmail;
+use GrimReapper\AdvancedEmail\Services\AttachmentManager;
+use GrimReapper\AdvancedEmail\Services\TemplateProcessor; 
 
 class EmailService implements EmailBuilderContract
 {
@@ -36,22 +38,17 @@ class EmailService implements EmailBuilderContract
 
     protected MailManager $mailer;
     protected array $config;
+    protected AttachmentManager $attachmentManager;
     protected array $to = [];
     protected array $cc = [];
     protected array $bcc = [];
     protected ?array $from = null;
-    protected ?string $subject = null;
+    protected ?string $subject = null; // Stays as direct input, passed to TemplateProcessor
     protected ?string $view = null;
     protected array $viewData = [];
-    protected ?string $htmlContent = null;
-    protected array $attachments = [];
-    protected array $rawAttachments = [];
-    protected array $storageAttachments = [];
+    protected ?string $htmlContent = null; // Stays as direct input, passed to TemplateProcessor
     protected ?string $mailerName = null;
-    protected array $placeholders = [];
-    protected array $placeholderPatterns = [];
-    protected ?string $templateName = null; // Added property to store template name
-    protected bool $isContentFromDatabaseTemplate = false;
+    protected TemplateProcessor $templateProcessor; // New property
     
     // Scheduling properties
     protected ?\DateTime $scheduledAt = null;
@@ -66,7 +63,8 @@ class EmailService implements EmailBuilderContract
         $this->mailer = $mailer;
         $this->config = $config;
         $this->mailerName = config('mail.default'); // Default to Laravel's default mailer
-        $this->registerDefaultPlaceholderPatterns();
+        $this->attachmentManager = new AttachmentManager();
+        $this->templateProcessor = new TemplateProcessor(); // Instantiate new processor
     }
 
     public function to(string|array $address, ?string $name = null): static
@@ -83,13 +81,11 @@ class EmailService implements EmailBuilderContract
      */
     public function template(string $templateName): static
     {
-        $this->templateName = $templateName;
-        // Reset view/html if template is set, template takes precedence initially
-        $this->view = null;
-        $this->htmlContent = null;
+        $this->templateProcessor->setTemplateName($templateName);
+        $this->view = null; 
         $this->viewData = [];
-        // Subject might be overridden by template, clear it here or handle in buildMailable
-        // $this->subject = null;
+        $this->htmlContent = null; 
+        $this->subject = null; // Subject might be loaded from template
         return $this;
     }
 
@@ -175,37 +171,7 @@ class EmailService implements EmailBuilderContract
      */
     protected function prepareAttachmentsForStorage(): array
     {
-        $result = [];
-        
-        // Process regular attachments
-        foreach ($this->attachments as $attachment) {
-            $result[] = [
-                'type' => 'file',
-                'path' => $attachment['file'],
-                'options' => $attachment['options'] ?? [],
-            ];
-        }
-        
-        // Process raw attachments
-        foreach ($this->rawAttachments as $attachment) {
-            $result[] = [
-                'type' => 'raw',
-                'data' => base64_encode($attachment['data']),
-                'name' => $attachment['name'],
-                'options' => $attachment['options'] ?? [],
-            ];
-        }
-        
-        // Process storage attachments
-        foreach ($this->storageAttachments as $attachment) {
-            $result[] = [
-                'type' => 'storage',
-                'path' => $attachment['path'],
-                'options' => $attachment['options'] ?? [],
-            ];
-        }
-        
-        return $result;
+        return $this->attachmentManager->prepareForStorage();
     }
 
     public function bcc(string|array $address, ?string $name = null): static
@@ -222,62 +188,55 @@ class EmailService implements EmailBuilderContract
 
     public function subject(string $subject): static
     {
-        $this->subject = $subject;
+        $this->subject = $subject; // Keep on EmailService for now
+        $this->templateProcessor->setDirectSubject($subject);
         return $this;
     }
 
     public function view(string $view, array $data = []): static
     {
-        $this->isContentFromDatabaseTemplate = false;
         $this->view = $view;
-        $this->viewData = $data;
-        $this->htmlContent = null; // View takes precedence
+        $this->viewData = array_merge($this->viewData, $data);
+        $this->htmlContent = null; 
+        $this->templateProcessor->setTemplateName(null); 
+        $this->templateProcessor->setDirectHtmlContent(null);
         return $this;
     }
 
     public function html(string $htmlContent, array $placeholders = []): static
     {
-        $this->isContentFromDatabaseTemplate = false;
-        $this->htmlContent = $htmlContent;
-        $this->placeholders = $placeholders;
-        $this->view = null; // HTML content takes precedence
+        $this->htmlContent = $htmlContent; // Keep on EmailService for now
+        $this->templateProcessor->setDirectHtmlContent($htmlContent);
+        if (!empty($placeholders)) {
+            $this->templateProcessor->addPlaceholders($placeholders);
+        }
+        $this->view = null; 
         $this->viewData = [];
+        $this->templateProcessor->setTemplateName(null); 
         return $this;
     }
 
     public function registerPlaceholderPattern(string $pattern, ?callable $callback = null): static
     {
-        $this->placeholderPatterns[] = ['pattern' => $pattern, 'callback' => $callback];
+        $this->templateProcessor->registerPattern($pattern, $callback);
         return $this;
     }
 
     public function attach(string $file, array $options = []): static
     {
-        // Check if the file exists before attempting to attach
-        if (!file_exists($file)) {
-            // Log a warning if the file doesn't exist
-            Log::warning("Attachment file not found and skipped: {$file}");
-            // Return the instance to allow chaining without adding the attachment
-            return $this;
-        }
-        $this->attachments[] = ['file' => $file, 'options' => $options];
+        $this->attachmentManager->addFile($file, $options);
         return $this;
     }
 
     public function attachData(string $data, string $name, array $options = []): static
     {
-        $this->rawAttachments[] = ['data' => $data, 'name' => $name, 'options' => $options];
+        $this->attachmentManager->addData($data, $name, $options);
         return $this;
     }
 
     public function attachFromStorage(string $disk, string $path, ?string $name = null, array $options = []): static
     {
-        $this->storageAttachments[] = [
-            'disk' => $disk,
-            'path' => $path,
-            'name' => $name,
-            'options' => $options
-        ];
+        $this->attachmentManager->addFromStorage($disk, $path, $name, $options);
         return $this;
     }
 
@@ -295,7 +254,7 @@ class EmailService implements EmailBuilderContract
      */
     public function with(array $placeholders): static
     {
-        $this->placeholders = array_merge($this->placeholders, $placeholders);
+        $this->templateProcessor->addPlaceholders($placeholders);
         return $this;
     }
     
@@ -523,7 +482,7 @@ class EmailService implements EmailBuilderContract
 
         $mailable = $this->buildMailable($logUuid);
 
-        // Pass the logUuid to the job so it can be logged when the job runs.
+        // Pass the logUuid and selectedAbVariantId to the job
         $job = new SendEmailJob($mailable, $this->mailerName, $logUuid);
 
         if ($connection) {
@@ -538,50 +497,12 @@ class EmailService implements EmailBuilderContract
         $this->resetState();
     }
 
-    protected function registerDefaultPlaceholderPatterns(): void
-    {
-        // Pattern for {{ placeholder }}
-        $this->registerPlaceholderPattern('/\{\{\s*([\w.-]+)\s*\}\}/');
-        // Pattern for ##placeholder## - Avoid matching CSS hex colors like #ffffff
-        // Looks for ## followed by word chars/dot/hyphen, not preceded by # or hex chars
-        $this->registerPlaceholderPattern('/(?<![#\da-fA-F])##([\w.-]+)##/');
-        // Pattern for [[placeholder]]
-        $this->registerPlaceholderPattern('/\[\[\s*([\w.-]+)\s*\]\]/');
-    }
-
-    protected function processPlaceholders(string $content): string
-    {
-        if (empty($this->placeholders) || empty($this->placeholderPatterns)) {
-            return $content;
-        }
-
-        foreach ($this->placeholderPatterns as $patternData) {
-            $pattern = $patternData['pattern'];
-            $callback = $patternData['callback'];
-
-            if ($callback && is_callable($callback)) {
-                // Use custom callback for replacement if provided
-                $content = preg_replace_callback($pattern, function ($matches) use ($callback) {
-                    $placeholderName = $matches[1] ?? null; // Get captured group
-                    if ($placeholderName === null) return $matches[0]; // No capture group, return original match
-                    return $callback($placeholderName, $this->placeholders[$placeholderName] ?? $matches[0], $this->placeholders);
-                }, $content);
-            } else {
-                // Default replacement logic
-                $content = preg_replace_callback($pattern, function ($matches) {
-                    $placeholderName = $matches[1] ?? null; // Get captured group
-                    if ($placeholderName === null) return $matches[0]; // No capture group, return original match
-                    // Replace with value if exists, otherwise keep original placeholder
-                    return $this->placeholders[$placeholderName] ?? $matches[0];
-                }, $content);
-            }
-        }
-
-        return $content;
-    }
+    // Removed registerDefaultPlaceholderPatterns() as it's handled by TemplateProcessor
+    // Removed processPlaceholders() as it's handled by TemplateProcessor
 
     protected function buildMailable(?string $logUuid = null): Mailable // Add logUuid parameter, make nullable for previews
     {
+        
         $mailable = new GenericMailable();
 
         if ($this->from) {
@@ -604,35 +525,22 @@ class EmailService implements EmailBuilderContract
         }
 
         // Process placeholders for subject and HTML content *after* potentially loading from template
-        $processedSubject = $this->subject ? $this->processPlaceholders($this->subject) : null;
-        $processedHtmlContent = $this->htmlContent ? $this->processPlaceholders($this->htmlContent) : null;
+        // $processedSubject = $this->subject ? $this->processPlaceholders($this->subject) : null;
+        // $processedHtmlContent = $this->htmlContent ? $this->processPlaceholders($this->htmlContent) : null;
         
-        if ($processedSubject) {
-            $mailable->subject($processedSubject);
-        }
+        // if ($processedSubject) {
+        //     $mailable->subject($processedSubject);
+        // }
         
-        if ($this->view) {
+        // if ($this->view) {
             // Render the view to HTML content for processing
-            $processedHtmlContent = view($this->view, $this->viewData)->render();
+            // $processedHtmlContent = view($this->view, $this->viewData)->render();
             // Process any placeholders in the rendered content
-            $processedHtmlContent = $this->processPlaceholders($processedHtmlContent);
-        }
+            // $processedHtmlContent = $this->processPlaceholders($processedHtmlContent);
+        // }
 
-        foreach ($this->attachments as $attachment) {
-            $mailable->attach($attachment['file'], $attachment['options']);
-        }
-
-        foreach ($this->rawAttachments as $attachment) {
-            $mailable->attachData($attachment['data'], $attachment['name'], $attachment['options']);
-        }
-
-        foreach ($this->storageAttachments as $attachment) {
-            $mailable->attachFromStorageDisk(
-                $attachment['disk'],
-                $attachment['path'],
-                $attachment['name'],
-                $attachment['options']
-            );
+        if ($this->attachmentManager->hasAttachments()) {
+            $this->attachmentManager->attachToMailable($mailable);
         }
 
         // Render Blade content if htmlContent is set
@@ -651,7 +559,8 @@ class EmailService implements EmailBuilderContract
                 
                 // Now render through Blade
                 $renderedHtml = $processedHtmlContent; // Default to processed content
-                if (!$this->isContentFromDatabaseTemplate && $processedHtmlContent) { // Only Blade render if not from DB template AND content exists
+                // TODO: This isContentFromDatabaseTemplate needs to be sourced from TemplateProcessor result
+                if (/*!$this->isContentFromDatabaseTemplate && */$processedHtmlContent) { 
                     $renderedHtml = Blade::render($processedHtmlContent, $this->viewData, true); // Pass true to delete cache
                 }
                 
@@ -705,7 +614,8 @@ class EmailService implements EmailBuilderContract
         }
 
         // Process placeholders for HTML content *after* potentially loading from template
-        $processedHtmlContent = $this->htmlContent ? $this->processPlaceholders($this->htmlContent) : null;
+        // $processedHtmlContent = $this->htmlContent ? $this->processPlaceholders($this->htmlContent) : null;
+        $processedHtmlContent = null; // Placeholder, will be replaced by TemplateProcessor logic
         
         if ($this->view) {
             // Render view if specified (takes precedence)
@@ -715,7 +625,7 @@ class EmailService implements EmailBuilderContract
                 Log::error("Blade view rendering failed for view '{$this->view}': " . $e->getMessage());
                 throw $e;
             }
-        } elseif ($processedHtmlContent) {
+        } elseif ($processedHtmlContent) { // This $processedHtmlContent will be from TemplateProcessor
             // Render Blade content from database template
             try {
                 // Parse HTML content properly to maintain structure
@@ -731,7 +641,8 @@ class EmailService implements EmailBuilderContract
                 
                 // Now render through Blade
                 $renderedHtml = $processedHtmlContent; // Default to processed content
-                if (!$this->isContentFromDatabaseTemplate && $processedHtmlContent) { // Only Blade render if not from DB template AND content exists
+                // TODO: This isContentFromDatabaseTemplate needs to be sourced from TemplateProcessor result
+                if (/*!$this->isContentFromDatabaseTemplate && */$processedHtmlContent) { 
                     $renderedHtml = Blade::render($processedHtmlContent, $this->viewData, true); // Pass true to delete cache
                 }
 
@@ -772,10 +683,10 @@ class EmailService implements EmailBuilderContract
     {
         // This method gathers data *before* sending for logging purposes
         // Actual logging happens in an event listener based on config
-        $attachments = collect($this->attachments)->pluck('file')
-            ->merge(collect($this->rawAttachments)->pluck('name'))
-            ->merge(collect($this->storageAttachments)->map(fn($att) => $att['name'] ?? basename($att['path'])))
-            ->all();
+        // $attachments = collect($this->attachments)->pluck('file')
+        //     ->merge(collect($this->rawAttachments)->pluck('name'))
+        //     ->merge(collect($this->storageAttachments)->map(fn($att) => $att['name'] ?? basename($att['path'])))
+        //     ->all();
 
         return [
             'mailer' => $this->mailerName,
@@ -784,12 +695,12 @@ class EmailService implements EmailBuilderContract
             'cc' => json_encode($this->cc),
             'bcc' => json_encode($this->bcc),
             'subject' => $this->subject, // Log original subject before processing
-            'template_name' => $this->templateName, // Add template name
+            // 'template_name' => $this->templateName, // This will be updated by TemplateProcessor logic
             'view' => $this->view,
             'html_content' => $this->htmlContent, // Log original content before processing
             'view_data' => !empty($this->viewData) ? json_encode($this->viewData) : null,
-            'placeholders' => !empty($this->placeholders) ? json_encode($this->placeholders) : null,
-            'attachments' => !empty($attachments) ? json_encode($attachments) : null,
+            // 'placeholders' => !empty($this->placeholders) ? json_encode($this->placeholders) : null, // Will be from TemplateProcessor
+            'attachments' => !empty($this->attachmentManager->prepareForStorage()) ? json_encode($this->attachmentManager->prepareForStorage()) : null,
             'sent_at' => now(),
             'status' => 'pending', // Initial status, updated by listeners
             'error' => null,
@@ -803,41 +714,7 @@ class EmailService implements EmailBuilderContract
      * @param string $templateName
      * @return void
      */
-    protected function loadTemplateData(string $templateName): void
-    {
-        try {
-            $template = EmailTemplate::where('name', $templateName)->firstOrFail();
-            $activeVersion = $template->activeVersion;
-
-            if (!$activeVersion) {
-                Log::warning("No active version found for email template: {$templateName}");
-                // Decide how to handle: throw exception, use fallback, or do nothing?
-                // For now, we'll log and proceed, potentially sending an empty email if no other content is set.
-                return;
-            }
-
-            // Only override if not explicitly set *after* calling template()
-            if ($this->subject === null) {
-                $this->subject = $activeVersion->subject;
-            }
-            if ($this->htmlContent === null && $this->view === null) {
-                $this->htmlContent = $activeVersion->html_content;
-                $this->isContentFromDatabaseTemplate = true;
-                // Optionally load text content if needed by GenericMailable or config
-                // $this->textContent = $activeVersion->text_content;
-            }
-            // Merge placeholders defined in template with those set manually, manual ones take precedence
-            $this->placeholders = array_merge($activeVersion->placeholders ?? [], $this->placeholders);
-
-        } catch (ModelNotFoundException $e) {
-            Log::error("Email template not found: {$templateName}");
-            // Decide how to handle: throw exception, use fallback, or do nothing?
-            // For now, log the error and let the process continue (might fail later if no view/html is set)
-        } catch (\Throwable $e) {
-            Log::error("Error loading email template '{$templateName}': " . $e->getMessage());
-            // Handle other potential errors during template loading
-        }
-    }
+    // Removed loadTemplateData as it's handled by TemplateProcessor
 
     /**
      * Process HTML content to replace links with tracking URLs.
@@ -932,13 +809,12 @@ class EmailService implements EmailBuilderContract
         $this->view = null;
         $this->viewData = [];
         $this->htmlContent = null;
-        $this->attachments = [];
-        $this->rawAttachments = [];
-        $this->storageAttachments = [];
+        $this->attachmentManager->reset();
         $this->mailerName = config('mail.default');
-        $this->placeholders = [];
-        $this->templateName = null; // Reset template name
-        $this->isContentFromDatabaseTemplate = false;
+        // $this->placeholders = []; // Removed property
+        $this->templateProcessor->reset(); // Reset TemplateProcessor state
+        // $this->templateName = null; // Removed property
+        // $this->isContentFromDatabaseTemplate = false; // Removed property
         
         // Reset scheduling properties
         $this->scheduledAt = null;

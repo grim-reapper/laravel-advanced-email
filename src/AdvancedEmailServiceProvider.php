@@ -13,6 +13,7 @@ use GrimReapper\AdvancedEmail\Events\EmailSent;
 use GrimReapper\AdvancedEmail\Listeners\LogEmailSent;
 use GrimReapper\AdvancedEmail\Console\Commands\ProcessScheduledEmailsCommand;
 use GrimReapper\AdvancedEmail\Console\Commands\ManageRecurringEmailsCommand;
+use GrimReapper\AdvancedEmail\Console\Commands\ProcessAbTestsCommand; // Add this line
 use Illuminate\Support\Facades\Route; // Add Route facade
 
 class AdvancedEmailServiceProvider extends ServiceProvider implements DeferrableProvider
@@ -71,6 +72,7 @@ class AdvancedEmailServiceProvider extends ServiceProvider implements Deferrable
             $this->commands([
                 ProcessScheduledEmailsCommand::class,
                 ManageRecurringEmailsCommand::class,
+                ProcessAbTestsCommand::class, // Add this line
             ]);
             
             $this->publishes([

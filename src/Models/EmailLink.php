@@ -4,6 +4,7 @@ namespace GrimReapper\AdvancedEmail\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use GrimReapper\AdvancedEmail\Models\EmailLog;
 
 class EmailLink extends Model
 {
@@ -27,11 +28,8 @@ class EmailLink extends Model
     /**
      * Get the email log that owns the link.
      */
-    public function emailLog()
+    public function emailLog(): \Illuminate\Database\Eloquent\Relations\BelongsTo
     {
-        // Assuming you have an EmailLog model, adjust namespace if needed
-        // return $this->belongsTo(EmailLog::class);
-        // If EmailLog model doesn't exist yet or is named differently, comment out or adjust
-        return null; // Placeholder
+        return $this->belongsTo(EmailLog::class, 'email_log_id');
     }
 }
