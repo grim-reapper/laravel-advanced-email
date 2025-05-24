@@ -49,6 +49,7 @@ class EmailService implements EmailBuilderContract
     protected ?string $htmlContent = null; // Stays as direct input, passed to TemplateProcessor
     protected ?string $mailerName = null;
     protected TemplateProcessor $templateProcessor; // New property
+    protected ?string $processedDbTemplateName = null; // New property for logging
     
     // Scheduling properties
     protected ?\DateTime $scheduledAt = null;
@@ -188,31 +189,28 @@ class EmailService implements EmailBuilderContract
 
     public function subject(string $subject): static
     {
-        $this->subject = $subject; // Keep on EmailService for now
-        $this->templateProcessor->setDirectSubject($subject);
+        $this->subject = $subject; // Store on EmailService as the primary input for subject
         return $this;
     }
 
     public function view(string $view, array $data = []): static
     {
         $this->view = $view;
-        $this->viewData = array_merge($this->viewData, $data);
-        $this->htmlContent = null; 
-        $this->templateProcessor->setTemplateName(null); 
-        $this->templateProcessor->setDirectHtmlContent(null);
+        $this->viewData = array_merge($this->viewData, $data); // Allow merging viewData
+        $this->htmlContent = null; // View overrides direct HTML
+        $this->templateProcessor->setTemplateName(null); // View overrides DB template for body
         return $this;
     }
 
     public function html(string $htmlContent, array $placeholders = []): static
     {
-        $this->htmlContent = $htmlContent; // Keep on EmailService for now
-        $this->templateProcessor->setDirectHtmlContent($htmlContent);
+        $this->htmlContent = $htmlContent; // Store on EmailService as primary input for HTML
         if (!empty($placeholders)) {
             $this->templateProcessor->addPlaceholders($placeholders);
         }
-        $this->view = null; 
-        $this->viewData = [];
-        $this->templateProcessor->setTemplateName(null); 
+        $this->view = null; // Direct HTML overrides view
+        $this->viewData = []; // Also clear viewData
+        $this->templateProcessor->setTemplateName(null); // Direct HTML overrides DB template
         return $this;
     }
 
@@ -373,11 +371,11 @@ class EmailService implements EmailBuilderContract
             'cc' => $this->formatRecipients($this->cc),
             'bcc' => $this->bcc,
             'subject' => $this->subject,
-            'template_name' => $this->templateName,
+            // 'template_name' => $this->templateName, // Old property, will be replaced by processedDbTemplateName
             'view' => $this->view,
             'html_content' => $this->htmlContent,
             'view_data' => $this->viewData,
-            'placeholders' => $this->placeholders,
+            // 'placeholders' => $this->placeholders, // Old property
             'attachments' => $this->prepareAttachmentsForStorage(),
             // Add other relevant fields if necessary
             'scheduled_at' => $this->scheduledAt, // Include scheduled_at for consistency, even if null
@@ -396,11 +394,11 @@ class EmailService implements EmailBuilderContract
             'cc' => $this->cc,
             'bcc' => $this->bcc,
             'subject' => $this->subject,
-            'template_name' => $this->templateName,
+            // 'template_name' => $this->templateName, // Old property
             'view' => $this->view,
             'html_content' => $this->htmlContent,
             'view_data' => $this->viewData,
-            'placeholders' => $this->placeholders,
+            // 'placeholders' => $this->placeholders, // Old property
             'attachments' => $this->prepareAttachmentsForStorage(),
             'sent_at' => now(),
             'status' => 'sending'
@@ -469,11 +467,11 @@ class EmailService implements EmailBuilderContract
             'cc' => $this->formatRecipients($this->cc),
             'bcc' => $this->bcc,
             'subject' => $this->subject,
-            'template_name' => $this->templateName,
+            // 'template_name' => $this->templateName, // Old property
             'view' => $this->view,
             'html_content' => $this->htmlContent,
             'view_data' => $this->viewData,
-            'placeholders' => $this->placeholders,
+            // 'placeholders' => $this->placeholders, // Old property
             'attachments' => $this->prepareAttachmentsForStorage(),
             // Add other relevant fields if necessary
             'scheduled_at' => $this->scheduledAt, // Include scheduled_at for consistency, even if null
@@ -497,11 +495,41 @@ class EmailService implements EmailBuilderContract
         $this->resetState();
     }
 
-    // Removed registerDefaultPlaceholderPatterns() as it's handled by TemplateProcessor
-    // Removed processPlaceholders() as it's handled by TemplateProcessor
+    // Removed methods: registerDefaultPlaceholderPatterns, processPlaceholders, loadTemplateData
 
     protected function buildMailable(?string $logUuid = null): Mailable // Add logUuid parameter, make nullable for previews
     {
+        // Pass current EmailService state to TemplateProcessor
+        // This assumes TemplateProcessor can accept these direct values if no template name is set.
+        if ($this->subject) {
+            $this->templateProcessor->setDirectSubject($this->subject);
+        }
+        if ($this->htmlContent) {
+            $this->templateProcessor->setDirectHtmlContent($this->htmlContent);
+        }
+        // Placeholders are already delegated via with()
+
+        // Process template (loads from DB if name set, applies placeholders)
+        $processedData = $this->templateProcessor->loadAndProcess();
+        
+        // Update EmailService state from processed data for logging/reference
+        $this->subject = $processedData->subject; // Update with processed subject
+        $this->processedDbTemplateName = $processedData->loadedTemplateName; // Store the name of the DB template that was used
+
+        $finalHtmlBody = $processedData->htmlBody;
+        $isFromDb = $processedData->isFromDatabase;
+
+        // If a Blade view file was specified, render it. This overrides DB template or direct HTML.
+        if ($this->view) {
+            try {
+                // Pass placeholders from TemplateProcessor to the view
+                $finalHtmlBody = View::make($this->view, array_merge($this->viewData, $this->templateProcessor->getPlaceholders()))->render();
+                $isFromDb = false; // Content is now from a Blade view file, not a DB template
+            } catch (\Throwable $e) {
+                Log::error("Blade view rendering failed for view '{$this->view}': " . $e->getMessage());
+                throw $e; // Or handle more gracefully
+            }
+        }
         
         $mailable = new GenericMailable();
 
@@ -519,50 +547,33 @@ class EmailService implements EmailBuilderContract
             $mailable->bcc($recipient['address'], $recipient['name']);
         }
 
-        // Load template if name is provided *before* processing placeholders
-        if ($this->templateName) {
-            $this->loadTemplateData($this->templateName);
+        if ($this->subject) { // Use the (potentially processed) subject
+            $mailable->subject($this->subject);
         }
-
-        // Process placeholders for subject and HTML content *after* potentially loading from template
-        // $processedSubject = $this->subject ? $this->processPlaceholders($this->subject) : null;
-        // $processedHtmlContent = $this->htmlContent ? $this->processPlaceholders($this->htmlContent) : null;
         
-        // if ($processedSubject) {
-        //     $mailable->subject($processedSubject);
-        // }
-        
-        // if ($this->view) {
-            // Render the view to HTML content for processing
-            // $processedHtmlContent = view($this->view, $this->viewData)->render();
-            // Process any placeholders in the rendered content
-            // $processedHtmlContent = $this->processPlaceholders($processedHtmlContent);
-        // }
-
         if ($this->attachmentManager->hasAttachments()) {
             $this->attachmentManager->attachToMailable($mailable);
         }
 
-        // Render Blade content if htmlContent is set
-        if ($processedHtmlContent) {
+        // Render Blade content if htmlContent is set (and not a Blade view)
+        if ($finalHtmlBody) {
             try {
-                // Parse HTML content properly to maintain structure
+                // Ensure HTML structure for Blade processing
                 libxml_use_internal_errors(true);
                 $dom = new DOMDocument();
-                // Load HTML with proper encoding and flags to maintain structure
-                $dom->loadHTML(mb_convert_encoding($processedHtmlContent, 'HTML-ENTITIES', 'UTF-8'), 
+                $dom->loadHTML(mb_convert_encoding($finalHtmlBody, 'HTML-ENTITIES', 'UTF-8'), 
                     LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
                 libxml_clear_errors();
+                $finalHtmlBody = $dom->saveHTML();
                 
-                // Convert back to string while preserving structure
-                $processedHtmlContent = $dom->saveHTML();
-                
-                // Now render through Blade
-                $renderedHtml = $processedHtmlContent; // Default to processed content
-                // TODO: This isContentFromDatabaseTemplate needs to be sourced from TemplateProcessor result
-                if (/*!$this->isContentFromDatabaseTemplate && */$processedHtmlContent) { 
-                    $renderedHtml = Blade::render($processedHtmlContent, $this->viewData, true); // Pass true to delete cache
-                }
+                // Only render through Blade::render if it's NOT from a DB template
+                // AND it's not from a Blade view file (already rendered)
+                // AND it's not a preview (previews handle their own Blade rendering)
+                $renderedHtml = $finalHtmlBody;
+                if (!$isFromDb && !$this->view && $finalHtmlBody) { 
+                    // Pass placeholders from TemplateProcessor to Blade render for direct HTML strings
+                    $renderedHtml = Blade::render($finalHtmlBody, array_merge($this->viewData, $this->templateProcessor->getPlaceholders()), true);
+                // The condition above `!$isFromDb && !$this->view` handles this
                 
                 // Process links for tracking if enabled and we have a log UUID
                 if ($logUuid && config('advanced_email.tracking.clicks.enabled')) {
@@ -590,9 +601,9 @@ class EmailService implements EmailBuilderContract
                 }
                 $mailable->html($renderedHtml);
             } catch (\Throwable $e) {
-                Log::error("Blade rendering failed for template '{$this->templateName}': " . $e->getMessage());
+                Log::error("Blade rendering failed for template '{$this->processedDbTemplateName}': " . $e->getMessage());
                 // Fallback or rethrow? For now, log and potentially send raw content if needed
-                // $mailable->html($processedHtmlContent); // Or maybe throw an exception
+                // $mailable->html($finalHtmlBody); // Or maybe throw an exception
                 throw $e; // Rethrow to make the failure explicit
             }
         }
@@ -608,57 +619,52 @@ class EmailService implements EmailBuilderContract
      */
     public function preview(): void
     {
-        // Load template if name is provided
-        if ($this->templateName) {
-            $this->loadTemplateData($this->templateName);
+        // Pass current EmailService state to TemplateProcessor
+        if ($this->subject) {
+            $this->templateProcessor->setDirectSubject($this->subject);
         }
+        if ($this->htmlContent) {
+            $this->templateProcessor->setDirectHtmlContent($this->htmlContent);
+        }
+        // Placeholders are already with TemplateProcessor
 
-        // Process placeholders for HTML content *after* potentially loading from template
-        // $processedHtmlContent = $this->htmlContent ? $this->processPlaceholders($this->htmlContent) : null;
-        $processedHtmlContent = null; // Placeholder, will be replaced by TemplateProcessor logic
-        
+        $processedData = $this->templateProcessor->loadAndProcess();
+        $finalHtmlBody = $processedData->htmlBody;
+        $isFromDb = $processedData->isFromDatabase;
+        $this->processedDbTemplateName = $processedData->loadedTemplateName; // For logging in case of error
+
         if ($this->view) {
-            // Render view if specified (takes precedence)
             try {
-                echo View::make($this->view, $this->viewData)->render();
+                // Pass placeholders from TemplateProcessor to the view
+                echo View::make($this->view, array_merge($this->viewData, $this->templateProcessor->getPlaceholders()))->render();
             } catch (\Throwable $e) {
                 Log::error("Blade view rendering failed for view '{$this->view}': " . $e->getMessage());
                 throw $e;
             }
-        } elseif ($processedHtmlContent) { // This $processedHtmlContent will be from TemplateProcessor
-            // Render Blade content from database template
+        } elseif ($finalHtmlBody) {
             try {
-                // Parse HTML content properly to maintain structure
                 libxml_use_internal_errors(true);
                 $dom = new DOMDocument();
-                // Load HTML with proper encoding and flags to maintain structure
-                $dom->loadHTML(mb_convert_encoding($processedHtmlContent, 'HTML-ENTITIES', 'UTF-8'), 
+                $dom->loadHTML(mb_convert_encoding($finalHtmlBody, 'HTML-ENTITIES', 'UTF-8'), 
                     LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
                 libxml_clear_errors();
+                $finalHtmlBody = $dom->saveHTML();
                 
-                // Convert back to string while preserving structure
-                $processedHtmlContent = $dom->saveHTML();
-                
-                // Now render through Blade
-                $renderedHtml = $processedHtmlContent; // Default to processed content
-                // TODO: This isContentFromDatabaseTemplate needs to be sourced from TemplateProcessor result
-                if (/*!$this->isContentFromDatabaseTemplate && */$processedHtmlContent) { 
-                    $renderedHtml = Blade::render($processedHtmlContent, $this->viewData, true); // Pass true to delete cache
+                $renderedHtml = $finalHtmlBody;
+                // Only Blade::render if not from DB template and not a Blade view
+                if (!$isFromDb && !$this->view && $finalHtmlBody) {
+                     // Pass placeholders from TemplateProcessor to Blade render
+                    $renderedHtml = Blade::render($finalHtmlBody, array_merge($this->viewData, $this->templateProcessor->getPlaceholders()), true);
                 }
-
-                // Link processing and tracking pixel injection are skipped in preview mode.
-
-                $this->resetState(); // Reset state after preview
                 echo $renderedHtml;
             } catch (\Throwable $e) {
-                Log::error("Blade rendering failed for template '{$this->templateName}' during preview: " . $e->getMessage());
-                $this->resetState(); // Reset state even on failure
-                throw $e; // Rethrow to make the failure explicit
+                Log::error("Blade rendering failed for template '{$this->processedDbTemplateName}' during preview: " . $e->getMessage());
+                throw $e;
             }
         } else {
             Log::warning("Preview requested but no view or HTML content is available.");
-            $this->resetState();
         }
+        $this->resetState(); // Reset state after preview
     }
 
     protected function addRecipients(string $type, string|array $address, ?string $name = null): void
@@ -694,12 +700,12 @@ class EmailService implements EmailBuilderContract
             'to' => json_encode($this->to),
             'cc' => json_encode($this->cc),
             'bcc' => json_encode($this->bcc),
-            'subject' => $this->subject, // Log original subject before processing
-            // 'template_name' => $this->templateName, // This will be updated by TemplateProcessor logic
+            'subject' => $this->subject, // This is the final subject after potential processing
+            'template_name' => $this->processedDbTemplateName, // Log the name of the DB template if one was used
             'view' => $this->view,
-            'html_content' => $this->htmlContent, // Log original content before processing
+            'html_content' => $this->htmlContent, // This is the original HTML input if any
             'view_data' => !empty($this->viewData) ? json_encode($this->viewData) : null,
-            // 'placeholders' => !empty($this->placeholders) ? json_encode($this->placeholders) : null, // Will be from TemplateProcessor
+            'placeholders' => !empty($this->templateProcessor->getPlaceholders()) ? json_encode($this->templateProcessor->getPlaceholders()) : null,
             'attachments' => !empty($this->attachmentManager->prepareForStorage()) ? json_encode($this->attachmentManager->prepareForStorage()) : null,
             'sent_at' => now(),
             'status' => 'pending', // Initial status, updated by listeners
