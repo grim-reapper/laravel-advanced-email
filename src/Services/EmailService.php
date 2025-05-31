@@ -30,7 +30,7 @@ use GrimReapper\AdvancedEmail\Models\EmailTemplate;
 use GrimReapper\AdvancedEmail\Models\EmailTemplateVersion;
 use GrimReapper\AdvancedEmail\Models\ScheduledEmail;
 use GrimReapper\AdvancedEmail\Services\AttachmentManager;
-use GrimReapper\AdvancedEmail\Services\TemplateProcessor; 
+use GrimReapper\AdvancedEmail\Services\TemplateProcessor;
 
 class EmailService implements EmailBuilderContract
 {
@@ -83,9 +83,9 @@ class EmailService implements EmailBuilderContract
     public function template(string $templateName): static
     {
         $this->templateProcessor->setTemplateName($templateName);
-        $this->view = null; 
+        $this->view = null;
         $this->viewData = [];
-        $this->htmlContent = null; 
+        $this->htmlContent = null;
         $this->subject = null; // Subject might be loaded from template
         return $this;
     }
@@ -511,7 +511,7 @@ class EmailService implements EmailBuilderContract
 
         // Process template (loads from DB if name set, applies placeholders)
         $processedData = $this->templateProcessor->loadAndProcess();
-        
+
         // Update EmailService state from processed data for logging/reference
         $this->subject = $processedData->subject; // Update with processed subject
         $this->processedDbTemplateName = $processedData->loadedTemplateName; // Store the name of the DB template that was used
@@ -530,7 +530,7 @@ class EmailService implements EmailBuilderContract
                 throw $e; // Or handle more gracefully
             }
         }
-        
+
         $mailable = new GenericMailable();
 
         if ($this->from) {
@@ -561,7 +561,7 @@ class EmailService implements EmailBuilderContract
                 // Ensure HTML structure for Blade processing
                 libxml_use_internal_errors(true);
                 $dom = new DOMDocument();
-                $dom->loadHTML(mb_convert_encoding($finalHtmlBody, 'HTML-ENTITIES', 'UTF-8'), 
+                $dom->loadHTML(mb_convert_encoding($finalHtmlBody, 'HTML-ENTITIES', 'UTF-8'),
                     LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
                 libxml_clear_errors();
                 $finalHtmlBody = $dom->saveHTML();
@@ -570,7 +570,7 @@ class EmailService implements EmailBuilderContract
                 // AND it's not from a Blade view file (already rendered)
                 // AND it's not a preview (previews handle their own Blade rendering)
                 $renderedHtml = $finalHtmlBody;
-                if (!$isFromDb && !$this->view && $finalHtmlBody) { 
+                if (!$isFromDb && !$this->view && $finalHtmlBody) {
                     // Pass placeholders from TemplateProcessor to Blade render for direct HTML strings
                     $renderedHtml = Blade::render($finalHtmlBody, array_merge($this->viewData, $this->templateProcessor->getPlaceholders()), true);
                 // The condition above `!$isFromDb && !$this->view` handles this
@@ -645,7 +645,7 @@ class EmailService implements EmailBuilderContract
             try {
                 libxml_use_internal_errors(true);
                 $dom = new DOMDocument();
-                $dom->loadHTML(mb_convert_encoding($finalHtmlBody, 'HTML-ENTITIES', 'UTF-8'), 
+                $dom->loadHTML(mb_convert_encoding($finalHtmlBody, 'HTML-ENTITIES', 'UTF-8'),
                     LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
                 libxml_clear_errors();
                 $finalHtmlBody = $dom->saveHTML();
@@ -773,7 +773,7 @@ class EmailService implements EmailBuilderContract
                 Log::warning("Invalid or disallowed URL scheme in link: {$originalUrl}");
                 continue; // Skip this link
             }
-            
+
             $linkUuid = (string) Str::uuid();
             // Store the link information
             try {
