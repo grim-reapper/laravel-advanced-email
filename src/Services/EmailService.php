@@ -30,7 +30,7 @@ use GrimReapper\AdvancedEmail\Models\EmailTemplate;
 use GrimReapper\AdvancedEmail\Models\EmailTemplateVersion;
 use GrimReapper\AdvancedEmail\Models\ScheduledEmail;
 use GrimReapper\AdvancedEmail\Services\AttachmentManager;
-use GrimReapper\AdvancedEmail\Services\TemplateProcessor;
+use GrimReapper\AdvancedEmail\Services\TemplateProcessor; 
 
 class EmailService implements EmailBuilderContract
 {
@@ -83,9 +83,9 @@ class EmailService implements EmailBuilderContract
     public function template(string $templateName): static
     {
         $this->templateProcessor->setTemplateName($templateName);
-        $this->view = null;
+        $this->view = null; 
         $this->viewData = [];
-        $this->htmlContent = null;
+        $this->htmlContent = null; 
         $this->subject = null; // Subject might be loaded from template
         return $this;
     }
@@ -137,11 +137,11 @@ class EmailService implements EmailBuilderContract
             'cc' => $this->formatRecipients($this->cc),
             'bcc' => $this->formatRecipients($this->bcc),
             'subject' => $this->subject,
-            'template_name' => $this->templateName,
+            'template_name' => $this->processedDbTemplateName,
             'view' => $this->view,
             'html_content' => $this->htmlContent,
             'view_data' => $this->viewData,
-            'placeholders' => $this->placeholders,
+            'placeholders' => $this->templateProcessor->getPlaceholders(),
             'attachments' => $this->prepareAttachmentsForStorage(),
         ]);
 
@@ -371,11 +371,11 @@ class EmailService implements EmailBuilderContract
             'cc' => $this->formatRecipients($this->cc),
             'bcc' => $this->bcc,
             'subject' => $this->subject,
-            // 'template_name' => $this->templateName, // Old property, will be replaced by processedDbTemplateName
+            'template_name' => $this->processedDbTemplateName,
             'view' => $this->view,
             'html_content' => $this->htmlContent,
             'view_data' => $this->viewData,
-            // 'placeholders' => $this->placeholders, // Old property
+            'placeholders' => $this->templateProcessor->getPlaceholders(),
             'attachments' => $this->prepareAttachmentsForStorage(),
             // Add other relevant fields if necessary
             'scheduled_at' => $this->scheduledAt, // Include scheduled_at for consistency, even if null
@@ -394,11 +394,11 @@ class EmailService implements EmailBuilderContract
             'cc' => $this->cc,
             'bcc' => $this->bcc,
             'subject' => $this->subject,
-            // 'template_name' => $this->templateName, // Old property
+            'template_name' => $this->processedDbTemplateName,
             'view' => $this->view,
             'html_content' => $this->htmlContent,
             'view_data' => $this->viewData,
-            // 'placeholders' => $this->placeholders, // Old property
+            'placeholders' => $this->templateProcessor->getPlaceholders(),
             'attachments' => $this->prepareAttachmentsForStorage(),
             'sent_at' => now(),
             'status' => 'sending'
@@ -467,11 +467,11 @@ class EmailService implements EmailBuilderContract
             'cc' => $this->formatRecipients($this->cc),
             'bcc' => $this->bcc,
             'subject' => $this->subject,
-            // 'template_name' => $this->templateName, // Old property
+            'template_name' => $this->processedDbTemplateName,
             'view' => $this->view,
             'html_content' => $this->htmlContent,
             'view_data' => $this->viewData,
-            // 'placeholders' => $this->placeholders, // Old property
+            'placeholders' => $this->templateProcessor->getPlaceholders(),
             'attachments' => $this->prepareAttachmentsForStorage(),
             // Add other relevant fields if necessary
             'scheduled_at' => $this->scheduledAt, // Include scheduled_at for consistency, even if null
@@ -495,121 +495,104 @@ class EmailService implements EmailBuilderContract
         $this->resetState();
     }
 
-    // Removed methods: registerDefaultPlaceholderPatterns, processPlaceholders, loadTemplateData
+protected function buildMailable(?string $logUuid = null): Mailable
+{
+    // 1. Pass current EmailService state (direct subject/HTML) to TemplateProcessor
+    //    This ensures TemplateProcessor knows about any subject() or html() calls.
+    $this->templateProcessor->setDirectSubject($this->subject);
+    $this->templateProcessor->setDirectHtmlContent($this->htmlContent);
 
-    protected function buildMailable(?string $logUuid = null): Mailable // Add logUuid parameter, make nullable for previews
-    {
-        // Pass current EmailService state to TemplateProcessor
-        // This assumes TemplateProcessor can accept these direct values if no template name is set.
-        if ($this->subject) {
-            $this->templateProcessor->setDirectSubject($this->subject);
+    // 2. Process template (loads from DB if name set, applies placeholders to subject/body)
+    $processedData = $this->templateProcessor->loadAndProcess();
+    
+    // 3. Update EmailService's own subject and processedDbTemplateName for logging/consistency.
+    //    The $this->subject property will now hold the definitive subject for this email send.
+    $currentSubject = $processedData->subject; 
+    $this->subject = $currentSubject; 
+    $this->processedDbTemplateName = $processedData->loadedTemplateName; 
+
+    $finalHtmlBody = $processedData->htmlBody;
+    $isFromDbRenderingFlag = $processedData->isFromDatabase;
+
+    // 4. If a Blade view file was specified ($this->view is not null), it overrides HTML body.
+    if ($this->view) {
+        try {
+            // Pass viewData from EmailService and any globally added placeholders from TemplateProcessor.
+            $finalHtmlBody = View::make($this->view, array_merge($this->viewData, $this->templateProcessor->getPlaceholders()))->render();
+            $isFromDbRenderingFlag = false; // Content is now from a Blade view file, not a DB template for rendering decision.
+        } catch (\Throwable $e) {
+            Log::error("Blade view rendering failed for view '{$this->view}': " . $e->getMessage());
+            throw $e; 
         }
-        if ($this->htmlContent) {
-            $this->templateProcessor->setDirectHtmlContent($this->htmlContent);
-        }
-        // Placeholders are already delegated via with()
-
-        // Process template (loads from DB if name set, applies placeholders)
-        $processedData = $this->templateProcessor->loadAndProcess();
-
-        // Update EmailService state from processed data for logging/reference
-        $this->subject = $processedData->subject; // Update with processed subject
-        $this->processedDbTemplateName = $processedData->loadedTemplateName; // Store the name of the DB template that was used
-
-        $finalHtmlBody = $processedData->htmlBody;
-        $isFromDb = $processedData->isFromDatabase;
-
-        // If a Blade view file was specified, render it. This overrides DB template or direct HTML.
-        if ($this->view) {
-            try {
-                // Pass placeholders from TemplateProcessor to the view
-                $finalHtmlBody = View::make($this->view, array_merge($this->viewData, $this->templateProcessor->getPlaceholders()))->render();
-                $isFromDb = false; // Content is now from a Blade view file, not a DB template
-            } catch (\Throwable $e) {
-                Log::error("Blade view rendering failed for view '{$this->view}': " . $e->getMessage());
-                throw $e; // Or handle more gracefully
-            }
-        }
-
-        $mailable = new GenericMailable();
-
-        if ($this->from) {
-            $mailable->from($this->from['address'], $this->from['name']);
-        }
-
-        foreach ($this->to as $recipient) {
-            $mailable->to($recipient['address'], $recipient['name']);
-        }
-        foreach ($this->cc as $recipient) {
-            $mailable->cc($recipient['address'], $recipient['name']);
-        }
-        foreach ($this->bcc as $recipient) {
-            $mailable->bcc($recipient['address'], $recipient['name']);
-        }
-
-        if ($this->subject) { // Use the (potentially processed) subject
-            $mailable->subject($this->subject);
-        }
-        
-        if ($this->attachmentManager->hasAttachments()) {
-            $this->attachmentManager->attachToMailable($mailable);
-        }
-
-        // Render Blade content if htmlContent is set (and not a Blade view)
-        if ($finalHtmlBody) {
-            try {
-                // Ensure HTML structure for Blade processing
-                libxml_use_internal_errors(true);
-                $dom = new DOMDocument();
-                $dom->loadHTML(mb_convert_encoding($finalHtmlBody, 'HTML-ENTITIES', 'UTF-8'),
-                    LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
-                libxml_clear_errors();
-                $finalHtmlBody = $dom->saveHTML();
-                
-                // Only render through Blade::render if it's NOT from a DB template
-                // AND it's not from a Blade view file (already rendered)
-                // AND it's not a preview (previews handle their own Blade rendering)
-                $renderedHtml = $finalHtmlBody;
-                if (!$isFromDb && !$this->view && $finalHtmlBody) {
-                    // Pass placeholders from TemplateProcessor to Blade render for direct HTML strings
-                    $renderedHtml = Blade::render($finalHtmlBody, array_merge($this->viewData, $this->templateProcessor->getPlaceholders()), true);
-                // The condition above `!$isFromDb && !$this->view` handles this
-                
-                // Process links for tracking if enabled and we have a log UUID
-                if ($logUuid && config('advanced_email.tracking.clicks.enabled')) {
-                    $renderedHtml = $this->processLinksForTracking($renderedHtml, $logUuid);
-                }
-                // dd(route('advanced_email.tracking.opens', ['uuid' => $logUuid]));
-                    
-                // Inject tracking pixel if enabled, route is configured, and we have a UUID (i.e., not a preview)
-                if ($logUuid && config('advanced_email.tracking.opens.enabled') && ($openTrackingRouteName = config('advanced_email.tracking.opens.route_name'))) {
-                    // Ensure the route name exists or handle URL generation appropriately
-                    // Construct the full route name using the group prefix
-                    $fullOpenTrackingRoute = 'advanced_email.tracking.' . $openTrackingRouteName;
-                    try {
-                        $pixelUrl = route($fullOpenTrackingRoute, ['uuid' => $logUuid]);
-                        $trackingPixel = '<img src="' . $pixelUrl . '" alt="" width="1" height="1" style="display:none;border:0;" />';
-                        // Append pixel to the end of the body, or handle more robustly if needed
-                        if (stripos($renderedHtml, '</body>') !== false) {
-                            $renderedHtml = str_ireplace('</body>', $trackingPixel . '</body>', $renderedHtml);
-                        } else {
-                            $renderedHtml .= $trackingPixel; // Fallback if </body> tag is not found
-                        }
-                    } catch (\InvalidArgumentException $e) {
-                        Log::error("Could not generate tracking pixel URL. Route '{$fullOpenTrackingRoute}' not defined or missing parameters?", ['uuid' => $logUuid]);
-                    }
-                }
-                $mailable->html($renderedHtml);
-            } catch (\Throwable $e) {
-                Log::error("Blade rendering failed for template '{$this->processedDbTemplateName}': " . $e->getMessage());
-                // Fallback or rethrow? For now, log and potentially send raw content if needed
-                // $mailable->html($finalHtmlBody); // Or maybe throw an exception
-                throw $e; // Rethrow to make the failure explicit
-            }
-        }
-
-        return $mailable;
     }
+    
+    // 5. Instantiate GenericMailable and set basic properties
+    $mailable = new GenericMailable();
+    if ($this->from) {
+        $mailable->from($this->from['address'], $this->from['name']);
+    }
+    // Simplified recipient handling (assuming addRecipients formats them correctly)
+    foreach ($this->to as $recipient) { $mailable->to($recipient['address'], $recipient['name']); }
+    foreach ($this->cc as $recipient) { $mailable->cc($recipient['address'], $recipient['name']); }
+    foreach ($this->bcc as $recipient) { $mailable->bcc($recipient['address'], $recipient['name']); }
+
+    if ($currentSubject) {
+        $mailable->subject($currentSubject);
+    }
+    
+    // 6. Attachments
+    if ($this->attachmentManager->hasAttachments()) {
+        $this->attachmentManager->attachToMailable($mailable);
+    }
+
+    // 7. Process and set HTML content for the mailable
+    if ($finalHtmlBody) {
+        try {
+            libxml_use_internal_errors(true);
+            $dom = new DOMDocument();
+            // Use mb_convert_encoding to ensure proper handling of HTML entities with UTF-8
+            $dom->loadHTML(mb_convert_encoding($finalHtmlBody, 'HTML-ENTITIES', 'UTF-8'), LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
+            libxml_clear_errors();
+            $htmlForProcessing = $dom->saveHTML(); // This is the placeholder-processed HTML
+            
+            $renderedHtml = $htmlForProcessing;
+
+            // Conditionally render with Blade:
+            // - If content is NOT from a database template ($isFromDbRenderingFlag is false)
+            // - AND we are NOT using a Blade view file ($this->view is null, meaning $finalHtmlBody came from direct input or DB template that allows further Blade processing)
+            // - AND there is HTML content to render.
+            if (!$isFromDbRenderingFlag && !$this->view && $htmlForProcessing) { 
+                $allPlaceholdersForBlade = array_merge($this->viewData, $this->templateProcessor->getPlaceholders());
+                $renderedHtml = Blade::render($htmlForProcessing, $allPlaceholdersForBlade, true);
+            }
+            
+            // Link and Open Tracking
+            if ($logUuid && config('advanced_email.tracking.clicks.enabled')) {
+                $renderedHtml = $this->processLinksForTracking($renderedHtml, $logUuid);
+            }
+            if ($logUuid && config('advanced_email.tracking.opens.enabled') && ($openTrackingRouteName = config('advanced_email.tracking.opens.route_name'))) {
+                $fullOpenTrackingRoute = 'advanced_email.tracking.' . $openTrackingRouteName;
+                try {
+                    $pixelUrl = route($fullOpenTrackingRoute, ['uuid' => $logUuid]);
+                    $trackingPixel = '<img src="' . $pixelUrl . '" alt="" width="1" height="1" style="display:none;border:0;" />';
+                    if (stripos($renderedHtml, '</body>') !== false) {
+                        $renderedHtml = str_ireplace('</body>', $trackingPixel . '</body>', $renderedHtml);
+                    } else {
+                        $renderedHtml .= $trackingPixel;
+                    }
+                } catch (\InvalidArgumentException $e) {
+                    Log::error("Could not generate tracking pixel URL. Route '{$fullOpenTrackingRoute}' not defined or missing parameters?", ['uuid' => $logUuid]);
+                }
+            }
+            $mailable->html($renderedHtml);
+        } catch (\Throwable $e) {
+            $errorContext = $this->view ?? $this->processedDbTemplateName ?? 'direct HTML input';
+            Log::error("Error processing or rendering HTML content for: " . $errorContext . ". Error: " . $e->getMessage());
+            throw $e; 
+        }
+    }
+    return $mailable;
+}
 
     /**
      * Preview the email content without sending.
@@ -619,52 +602,67 @@ class EmailService implements EmailBuilderContract
      */
     public function preview(): void
     {
-        // Pass current EmailService state to TemplateProcessor
-        if ($this->subject) {
-            $this->templateProcessor->setDirectSubject($this->subject);
-        }
-        if ($this->htmlContent) {
-            $this->templateProcessor->setDirectHtmlContent($this->htmlContent);
-        }
-        // Placeholders are already with TemplateProcessor
+        // 1. Pass current EmailService state (direct subject/HTML) to TemplateProcessor
+        $this->templateProcessor->setDirectSubject($this->subject);
+        $this->templateProcessor->setDirectHtmlContent($this->htmlContent);
+        // Placeholders are already managed by templateProcessor via with()
 
+        // 2. Process template (loads from DB if name set, applies placeholders to subject/body)
         $processedData = $this->templateProcessor->loadAndProcess();
-        $finalHtmlBody = $processedData->htmlBody;
-        $isFromDb = $processedData->isFromDatabase;
-        $this->processedDbTemplateName = $processedData->loadedTemplateName; // For logging in case of error
+        
+        // Update EmailService's subject and processedDbTemplateName for context (e.g. error logging)
+        // Although subject isn't directly outputted in preview, having it processed is consistent.
+        $this->subject = $processedData->subject; 
+        $this->processedDbTemplateName = $processedData->loadedTemplateName;
 
+        $finalHtmlBody = $processedData->htmlBody;
+        $isFromDbRenderingFlag = $processedData->isFromDatabase;
+
+        // 3. If a Blade view file was specified, it overrides HTML body.
         if ($this->view) {
             try {
-                // Pass placeholders from TemplateProcessor to the view
-                echo View::make($this->view, array_merge($this->viewData, $this->templateProcessor->getPlaceholders()))->render();
+                // Pass combined viewData (from EmailService) and placeholders (from TemplateProcessor) to the view.
+                $finalHtmlBody = View::make($this->view, array_merge($this->viewData, $this->templateProcessor->getPlaceholders()))->render();
+                $isFromDbRenderingFlag = false; // Content is now from a Blade view file.
             } catch (\Throwable $e) {
-                Log::error("Blade view rendering failed for view '{$this->view}': " . $e->getMessage());
-                throw $e;
+                Log::error("Blade view rendering failed for preview of view '{$this->view}': " . $e->getMessage());
+                $this->resetState(); // Reset state on error
+                throw $e; 
             }
-        } elseif ($finalHtmlBody) {
+        }
+        
+        // 4. Process and output HTML content
+        if ($finalHtmlBody) {
             try {
+                // Ensure HTML structure (though less critical for echo than for mailable)
                 libxml_use_internal_errors(true);
                 $dom = new DOMDocument();
-                $dom->loadHTML(mb_convert_encoding($finalHtmlBody, 'HTML-ENTITIES', 'UTF-8'),
-                    LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
+                $dom->loadHTML(mb_convert_encoding($finalHtmlBody, 'HTML-ENTITIES', 'UTF-8'), LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
                 libxml_clear_errors();
-                $finalHtmlBody = $dom->saveHTML();
+                $htmlForProcessing = $dom->saveHTML();
                 
-                $renderedHtml = $finalHtmlBody;
-                // Only Blade::render if not from DB template and not a Blade view
-                if (!$isFromDb && !$this->view && $finalHtmlBody) {
-                     // Pass placeholders from TemplateProcessor to Blade render
-                    $renderedHtml = Blade::render($finalHtmlBody, array_merge($this->viewData, $this->templateProcessor->getPlaceholders()), true);
+                $renderedHtml = $htmlForProcessing; // Default to this content
+
+                // Conditionally render with Blade:
+                // - If content is NOT from a database template (isFromDbRenderingFlag is false)
+                // - AND we are NOT using a Blade view file ($this->view is null)
+                // - AND there is HTML content to render.
+                if (!$isFromDbRenderingFlag && !$this->view && $htmlForProcessing) { 
+                    $allPlaceholdersForBlade = array_merge($this->viewData, $this->templateProcessor->getPlaceholders());
+                    $renderedHtml = Blade::render($htmlForProcessing, $allPlaceholdersForBlade, true);
                 }
                 echo $renderedHtml;
             } catch (\Throwable $e) {
-                Log::error("Blade rendering failed for template '{$this->processedDbTemplateName}' during preview: " . $e->getMessage());
-                throw $e;
+                $errorContext = $this->view ?? $this->processedDbTemplateName ?? 'direct HTML input';
+                Log::error("Error processing or rendering HTML content for preview: " . $errorContext . ". Error: " . $e->getMessage());
+                $this->resetState(); // Reset state on error
+                throw $e; 
             }
         } else {
-            Log::warning("Preview requested but no view or HTML content is available.");
+            Log::warning("Preview requested but no view or HTML content is available to render.");
         }
-        $this->resetState(); // Reset state after preview
+        
+        $this->resetState(); // Reset state after successful preview or warning
     }
 
     protected function addRecipients(string $type, string|array $address, ?string $name = null): void
@@ -720,7 +718,6 @@ class EmailService implements EmailBuilderContract
      * @param string $templateName
      * @return void
      */
-    // Removed loadTemplateData as it's handled by TemplateProcessor
 
     /**
      * Process HTML content to replace links with tracking URLs.
@@ -773,7 +770,7 @@ class EmailService implements EmailBuilderContract
                 Log::warning("Invalid or disallowed URL scheme in link: {$originalUrl}");
                 continue; // Skip this link
             }
-
+            
             $linkUuid = (string) Str::uuid();
             // Store the link information
             try {
@@ -811,16 +808,20 @@ class EmailService implements EmailBuilderContract
         $this->cc = [];
         $this->bcc = [];
         $this->from = null;
-        $this->subject = null;
+        $this->subject = null; 
         $this->view = null;
         $this->viewData = [];
-        $this->htmlContent = null;
+        $this->htmlContent = null; 
+        $this->processedDbTemplateName = null;
+
         $this->attachmentManager->reset();
+        // It's good practice to check if $templateProcessor is set, 
+        // though in current flow it always should be by the time resetState is called.
+        if (isset($this->templateProcessor)) { 
+            $this->templateProcessor->reset();
+        }
+        
         $this->mailerName = config('mail.default');
-        // $this->placeholders = []; // Removed property
-        $this->templateProcessor->reset(); // Reset TemplateProcessor state
-        // $this->templateName = null; // Removed property
-        // $this->isContentFromDatabaseTemplate = false; // Removed property
         
         // Reset scheduling properties
         $this->scheduledAt = null;
@@ -828,9 +829,6 @@ class EmailService implements EmailBuilderContract
         $this->frequency = null;
         $this->frequencyOptions = [];
         $this->conditions = [];
-        
-        // Keep custom patterns, but reset defaults if needed or clear all
-        // $this->placeholderPatterns = [];
-        // $this->registerDefaultPlaceholderPatterns(); // Reset to default mailer
+        $this->retryAttempts = 0;
     }
 }

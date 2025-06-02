@@ -44,7 +44,7 @@ class AttachmentManager
     public function prepareForStorage(): array
     {
         $result = [];
-
+        
         foreach ($this->attachments as $attachment) {
             $result[] = [
                 'type' => 'file',
@@ -52,7 +52,7 @@ class AttachmentManager
                 'options' => $attachment['options'] ?? [],
             ];
         }
-
+        
         foreach ($this->rawAttachments as $attachment) {
             $result[] = [
                 'type' => 'raw',
@@ -61,7 +61,7 @@ class AttachmentManager
                 'options' => $attachment['options'] ?? [],
             ];
         }
-
+        
         foreach ($this->storageAttachments as $attachment) {
             $result[] = [
                 'type' => 'storage',
@@ -71,7 +71,7 @@ class AttachmentManager
                 'options' => $attachment['options'] ?? [],
             ];
         }
-
+        
         return $result;
     }
 

@@ -48,7 +48,7 @@ class ProcessAbTestsCommand extends Command
                                     ->where('winner_selection_strategy', 'automatic_best_performing')
                                     ->with('variants') // Eager load variants for potential use
                                     ->get();
-
+        
         if ($testsToProcess->isEmpty()) {
             $this->info('No A/B tests found that are running and configured for automatic processing.');
             return 0;
@@ -58,7 +58,7 @@ class ProcessAbTestsCommand extends Command
         foreach ($testsToProcess as $test) {
             // Ensure created_at is a Carbon instance if not already cast in the model
             $createdAt = $test->created_at instanceof Carbon ? $test->created_at : Carbon::parse($test->created_at);
-
+            
             if (Carbon::now()->gte($createdAt->addHours($test->test_duration_hours))) {
                 $this->info("Processing A/B Test: {$test->name} (ID: {$test->id}) - Duration has passed.");
                 // Placeholder for winner selection logic
@@ -101,7 +101,7 @@ class ProcessAbTestsCommand extends Command
             } else {
                 $this->warn("Unsupported decision metric '{ $test->decision_metric }' for test '{ $test->name }'. Skipping winner determination.");
                 // Optionally set test to an error state or complete without winner
-                $test->status = 'completed';
+                $test->status = 'completed'; 
                 $test->completed_at = Carbon::now();
                 $test->save();
                 return;

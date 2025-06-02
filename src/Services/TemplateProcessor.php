@@ -36,7 +36,7 @@ class TemplateProcessor
     {
         $this->templateName = $name;
         // When a DB template is set, direct html/subject are not primary sources
-        $this->directHtmlContent = null;
+        $this->directHtmlContent = null; 
         $this->directSubject = null;
         $this->isContentFromDatabaseTemplate = (bool)$name; // True if a template name is provided
         return $this;
@@ -46,7 +46,7 @@ class TemplateProcessor
     {
         return $this->templateName;
     }
-
+    
     public function setDirectHtmlContent(?string $html): static
     {
         $this->directHtmlContent = $html;
@@ -69,7 +69,7 @@ class TemplateProcessor
         $this->placeholders = array_merge($this->placeholders, $placeholders);
         return $this;
     }
-
+    
     public function getPlaceholders(): array
     {
         return $this->placeholders;
@@ -121,7 +121,7 @@ class TemplateProcessor
         $currentHtmlBody = $this->directHtmlContent;
         // This internal flag is true if templateName is set, false if html() or view() was called last.
         // It will be updated if a DB template load attempt is made.
-        $finalIsFromDb = false;
+        $finalIsFromDb = false; 
         $loadedTemplateName = null;
 
         if ($this->templateName) {
@@ -136,7 +136,7 @@ class TemplateProcessor
                     // Current logic: if directSubject is set, it wins. If not, template subject is used.
                     $currentSubject = $this->directSubject ?? $activeVersion->subject;
                     $currentHtmlBody = $activeVersion->html_content; // Template body always wins if template is set
-
+                    
                     // Placeholders from template are defaults, those added via with() are merged (and override)
                     $this->placeholders = array_merge($activeVersion->placeholders ?? [], $this->placeholders);
                     $finalIsFromDb = true; // Content is successfully from DB
@@ -149,7 +149,7 @@ class TemplateProcessor
                 Log::error("Error loading email template '{$this->templateName}': " . $e->getMessage());
             }
         }
-
+        
         $processedSubject = $this->applyPlaceholders($currentSubject);
         $processedHtmlBody = $this->applyPlaceholders($currentHtmlBody);
 
@@ -161,7 +161,7 @@ class TemplateProcessor
         $this->templateName = null;
         $this->placeholders = [];
         // Placeholder patterns are usually registered once, so not resetting them by default.
-        // $this->placeholderPatterns = [];
+        // $this->placeholderPatterns = []; 
         // $this->registerDefaultPlaceholderPatterns();
         $this->isContentFromDatabaseTemplate = false;
         $this->directHtmlContent = null;
