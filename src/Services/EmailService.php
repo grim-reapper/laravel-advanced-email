@@ -457,7 +457,7 @@ class EmailService implements EmailBuilderContract
                 'logUuid' => $logUuid,
                 'exception' => $e
             ]);
-            Event::dispatch(new EmailFailed(array_merge($eventData, ['exception' => $e])));
+            Event::dispatch(new EmailFailed($eventData, $e));
             throw $e;
         } finally {
             $this->resetState();
