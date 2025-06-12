@@ -4,6 +4,10 @@ namespace GrimReapper\AdvancedEmail;
 
 use Illuminate\Support\Facades\Mail;
 
+/**
+ * @deprecated This class is deprecated and will be removed in a future version.
+ * Please use \GrimReapper\AdvancedEmail\Facades\Email (which utilizes EmailService) instead for a feature-rich experience.
+ */
 class EmailBuilder
 {
     protected $app;

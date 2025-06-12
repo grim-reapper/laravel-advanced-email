@@ -63,6 +63,13 @@ class TrackingController extends Controller
             $emailLink->clicked_at = Carbon::now();
             $emailLink->save();
 
+            // Validate URL scheme before redirecting
+            $scheme = parse_url($emailLink->original_url, PHP_URL_SCHEME);
+            if (!in_array(strtolower($scheme ?? ''), ['http', 'https'])) {
+                Log::warning("Attempted redirect to URL with invalid scheme: {$emailLink->original_url}");
+                abort(400, 'Invalid redirect URL.');
+            }
+
             // Redirect the user to the original URL
             return redirect()->away($emailLink->original_url);
 

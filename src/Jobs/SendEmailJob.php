@@ -12,6 +12,8 @@ use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Log;
 use Exception; // Import base Exception class
+use GrimReapper\AdvancedEmail\Events\EmailSent;
+use GrimReapper\AdvancedEmail\Events\EmailFailed;
 
 class SendEmailJob implements ShouldQueue
 {
@@ -68,13 +70,22 @@ class SendEmailJob implements ShouldQueue
         if ($this->mailerName) {
             $providers = [$this->mailerName];
         }
-
+        
         if ($strategy === 'sequential') {
             foreach ($providers as $provider) {
                 try {
                     Log::debug("Attempting to send email via provider: {$provider}", ['logUuid' => $this->logUuid]);
                     Mail::mailer($provider)->send($this->mailable);
                     Log::info("Email sent successfully via provider: {$provider}", ['logUuid' => $this->logUuid]);
+
+                    // Dispatch EmailSent event on successful send
+                    event(new EmailSent([
+                        'uuid' => $this->logUuid,
+                        'mailable' => $this->mailable,
+                        'mailer' => $provider,
+                        'status' => 'sent'
+                    ]));
+
                     $lastException = null; // Clear exception on success
                     break; // Exit loop on successful send
                 } catch (Exception $e) {
@@ -91,13 +102,21 @@ class SendEmailJob implements ShouldQueue
             Log::error("Unsupported failover strategy: {$strategy}", ['logUuid' => $this->logUuid]);
             // Fallback to default behavior or throw an error
             try {
-                 Mail::mailer($this->mailerName ?? Config::get('mail.default', 'smtp'))->send($this->mailable);
+                Mail::mailer($this->mailerName ?? Config::get('mail.default', 'smtp'))->send($this->mailable);
+                
+                // Dispatch EmailSent event on successful send
+                event(new EmailSent([
+                    'uuid' => $this->logUuid,
+                    'mailable' => $this->mailable,
+                    'mailer' => $this->mailerName ?? Config::get('mail.default', 'smtp'),
+                    'status' => 'sent'
+                ]));
             } catch (Exception $e) {
-                 $lastException = $e;
-                 Log::error("Failed to send email using default/specified mailer after unsupported strategy.", [
-                     'logUuid' => $this->logUuid,
-                     'exception' => $e
-                 ]);
+                $lastException = $e;
+                Log::error("Failed to send email using default/specified mailer after unsupported strategy.", [
+                    'logUuid' => $this->logUuid,
+                    'exception' => $e
+                ]);
             }
         }
 
@@ -107,8 +126,15 @@ class SendEmailJob implements ShouldQueue
                 'logUuid' => $this->logUuid,
                 'exception' => $lastException
             ]);
-            // Optionally, dispatch a specific failed event here
-            // event(new EmailFailed($this->mailable, $lastException, $this->logUuid));
+            
+            // Dispatch EmailFailed event
+            event(new EmailFailed([
+                'uuid' => $this->logUuid,
+                'mailable' => $this->mailable,
+                'mailer' => $this->mailerName ?? Config::get('mail.default', 'smtp'),
+                'status' => 'failed'
+            ], $lastException));
+            
             throw $lastException; // Re-throw the last exception
         }
     }
