@@ -12,6 +12,8 @@ use GrimReapper\AdvancedEmail\Models\ScheduledEmail;
 use GrimReapper\AdvancedEmail\Services\EmailService;
 use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Mail\Mailable;
 
 class ProcessScheduledEmailsJob implements ShouldQueue
 {
@@ -59,130 +61,218 @@ class ProcessScheduledEmailsJob implements ShouldQueue
      */
     public function handle(): void
     {
-        Log::info('Processing scheduled emails');
+        try {
+            Log::info('Starting ProcessScheduledEmailsJob');
 
-        // Get pending emails that are due to be sent
-        $scheduledEmails = ScheduledEmail::where('status', 'pending')
-            ->where('scheduled_at', '<=', now())
-            ->take($this->batchSize)
-            ->get();
+            // Get pending emails that are due to be sent
+            $scheduledEmails = ScheduledEmail::where('status', 'pending')
+                ->where('scheduled_at', '<=', now())
+                ->take($this->batchSize)
+                ->get();
 
-        Log::info('Found ' . $scheduledEmails->count() . ' scheduled emails to process');
-        
-        // Process failed emails for retry if enabled
-        if ($this->processFailedEmails) {
-            $this->processFailedEmailsForRetry();
-        }
+            Log::info('Found ' . $scheduledEmails->count() . ' scheduled emails to process', [
+                'batch_size' => $this->batchSize,
+                'time' => now(),
+                'emails' => $scheduledEmails->map(function($email) {
+                    return [
+                        'id' => $email->id,
+                        'uuid' => $email->uuid,
+                        'status' => $email->status,
+                        'scheduled_at' => $email->scheduled_at,
+                    ];
+                })->toArray()
+            ]);
+            
+            // Process failed emails for retry if enabled
+            if ($this->processFailedEmails) {
+                Log::info('Processing failed emails for retry');
+                $this->processFailedEmailsForRetry();
+            }
 
-        foreach ($scheduledEmails as $scheduledEmail) {
-            try {
-                // Mark as processing to prevent duplicate processing
-                $scheduledEmail->update(['status' => 'processing']);
-
-                // Check if conditions are met
-                if (!$scheduledEmail->isReadyToSend()) {
-                    // If not ready but still pending, reset status
-                    $scheduledEmail->update(['status' => 'pending']);
-                    continue;
-                }
-
-                // Create email service instance
-                $emailService = App::make(EmailService::class);
-
-                // Configure the email
-                if ($scheduledEmail->from) {
-                    $from = $scheduledEmail->from;
-                    $emailService->from($from['address'], $from['name'] ?? null);
-                }
-
-                // Set recipients
-                foreach ($scheduledEmail->to as $recipient) {
-                    $emailService->to($recipient['address'], $recipient['name'] ?? null);
-                }
-
-                if ($scheduledEmail->cc) {
-                    foreach ($scheduledEmail->cc as $recipient) {
-                        $emailService->cc($recipient['address'], $recipient['name'] ?? null);
-                    }
-                }
-
-                if ($scheduledEmail->bcc) {
-                    foreach ($scheduledEmail->bcc as $recipient) {
-                        $emailService->bcc($recipient['address'], $recipient['name'] ?? null);
-                    }
-                }
-
-                // Set subject
-                if ($scheduledEmail->subject) {
-                    $emailService->subject($scheduledEmail->subject);
-                }
-
-                // Set content (template, view, or HTML)
-                if ($scheduledEmail->template_name) {
-                    $emailService->template($scheduledEmail->template_name);
-                } elseif ($scheduledEmail->view) {
-                    $emailService->view($scheduledEmail->view, $scheduledEmail->view_data ?? []);
-                } elseif ($scheduledEmail->html_content) {
-                    $emailService->html($scheduledEmail->html_content, $scheduledEmail->placeholders ?? []);
-                }
-
-                // Set mailer if specified
-                if ($scheduledEmail->mailer) {
-                    $emailService->mailer($scheduledEmail->mailer);
-                }
-
-                // Send the email
-                $emailService->send();
-
-                // Update status and sent_at timestamp
-                $scheduledEmail->update([
-                    'status' => 'sent',
-                    'sent_at' => now(),
+            Log::info('Starting to process scheduled emails');
+            foreach ($scheduledEmails as $scheduledEmail) {
+                Log::info('Processing email', [
+                    'id' => $scheduledEmail->id,
+                    'uuid' => $scheduledEmail->uuid,
+                    'status' => $scheduledEmail->status,
+                    'scheduled_at' => $scheduledEmail->scheduled_at
                 ]);
 
-                // For recurring emails, create the next occurrence
-                if ($scheduledEmail->frequency) {
-                    $scheduledEmail->createNextOccurrence();
-                }
+                try {
+                    // First check if the email is ready to be sent
+                    if (!$scheduledEmail->isReadyToSend()) {
+                        Log::info('Email is not ready to send', [
+                            'id' => $scheduledEmail->id,
+                            'uuid' => $scheduledEmail->uuid,
+                            'status' => $scheduledEmail->status
+                        ]);
+                        continue;
+                    }
 
-                Log::info('Successfully sent scheduled email', ['uuid' => $scheduledEmail->uuid]);
-            } catch (\Throwable $e) {
-                // Check if we should retry or mark as permanently failed
-                $retryAttempts = $scheduledEmail->retry_attempts ?? 0;
-                
-                if ($retryAttempts < $this->maxRetryAttempts) {
-                    // Increment retry attempts and set status back to pending with a delay
-                    $retryDelay = $this->calculateRetryDelay($retryAttempts);
-                    $nextAttemptAt = now()->addMinutes($retryDelay);
-                    
-                    $scheduledEmail->update([
-                        'status' => 'pending',
-                        'scheduled_at' => $nextAttemptAt,
-                        'retry_attempts' => $retryAttempts + 1,
-                        'error' => $e->getMessage(),
-                    ]);
-                    
-                    Log::warning('Scheduled email failed, will retry', [
-                        'uuid' => $scheduledEmail->uuid,
-                        'retry_attempt' => $retryAttempts + 1,
-                        'next_attempt_at' => $nextAttemptAt,
-                        'error' => $e->getMessage(),
-                    ]);
-                } else {
-                    // Max retries reached, mark as permanently failed
-                    $scheduledEmail->update([
-                        'status' => 'failed',
-                        'error' => $e->getMessage(),
+                    // Mark as processing to prevent duplicate processing
+                    if (!$scheduledEmail->update(['status' => 'processing'])) {
+                        Log::error('Failed to update email status to processing', [
+                            'uuid' => $scheduledEmail->uuid,
+                            'id' => $scheduledEmail->id
+                        ]);
+                        continue;
+                    }
+
+                    Log::info('Email marked as processing', [
+                        'id' => $scheduledEmail->id,
+                        'uuid' => $scheduledEmail->uuid
                     ]);
 
-                    Log::error('Failed to send scheduled email after max retries', [
-                        'uuid' => $scheduledEmail->uuid,
-                        'retry_attempts' => $retryAttempts,
-                        'error' => $e->getMessage(),
-                        'trace' => $e->getTraceAsString(),
+                    Log::info('Email is ready to send, preparing to send', [
+                        'id' => $scheduledEmail->id,
+                        'uuid' => $scheduledEmail->uuid
                     ]);
+
+                    // Create email service instance with both MailManager and config
+                    $emailService = new EmailService(
+                        app(\Illuminate\Mail\MailManager::class),
+                        config('advanced_email')
+                    );
+
+                    // Configure the email
+                    if ($scheduledEmail->from) {
+                        $from = $scheduledEmail->from;
+                        $emailService->from($from['address'], $from['name'] ?? null);
+                    }
+
+                    // Set recipients
+                    foreach ($scheduledEmail->to as $recipient) {
+                        $emailService->to($recipient['address'], $recipient['name'] ?? null);
+                    }
+
+                    if ($scheduledEmail->cc) {
+                        foreach ($scheduledEmail->cc as $recipient) {
+                            $emailService->cc($recipient['address'], $recipient['name'] ?? null);
+                        }
+                    }
+
+                    if ($scheduledEmail->bcc) {
+                        foreach ($scheduledEmail->bcc as $recipient) {
+                            $emailService->bcc($recipient['address'], $recipient['name'] ?? null);
+                        }
+                    }
+
+                    // Set subject
+                    if ($scheduledEmail->subject) {
+                        $emailService->subject($scheduledEmail->subject);
+                    }
+
+                    // Set content (template, view, or HTML)
+                    if ($scheduledEmail->template_name) {
+                        $emailService->template($scheduledEmail->template_name);
+                    } elseif ($scheduledEmail->view) {
+                        // Ensure view_data is an array and handle nested objects
+                        $viewData = $scheduledEmail->view_data ?? [];
+                        if (is_string($viewData)) {
+                            $viewData = json_decode($viewData, true); // true to get arrays instead of objects
+                        }
+                        $emailService->view($scheduledEmail->view, $viewData);
+                    } elseif ($scheduledEmail->html_content) {
+                        $emailService->html($scheduledEmail->html_content, $scheduledEmail->placeholders ?? []);
+                    }
+
+                    // Set mailer if specified
+                    if ($scheduledEmail->mailer) {
+                        $emailService->mailer($scheduledEmail->mailer);
+                    }
+
+                    Log::info('Sending email', [
+                        'id' => $scheduledEmail->id,
+                        'uuid' => $scheduledEmail->uuid
+                    ]);
+
+                    // Send the email
+                    $emailService->send();
+
+                    // Update status and sent_at timestamp
+                    if (!$scheduledEmail->update([
+                        'status' => 'sent',
+                        'sent_at' => now(),
+                    ])) {
+                        Log::error('Failed to update email status to sent', [
+                            'uuid' => $scheduledEmail->uuid,
+                            'id' => $scheduledEmail->id
+                        ]);
+                    }
+
+                    // For recurring emails, create the next occurrence
+                    if ($scheduledEmail->frequency) {
+                        $scheduledEmail->createNextOccurrence();
+                    }
+
+                    Log::info('Successfully sent scheduled email', [
+                        'id' => $scheduledEmail->id,
+                        'uuid' => $scheduledEmail->uuid
+                    ]);
+                } catch (\Exception $e) {
+                    Log::error('Failed to process scheduled email', [
+                        'uuid' => $scheduledEmail->uuid,
+                        'id' => $scheduledEmail->id,
+                        'error' => $e->getMessage(),
+                        'trace' => $e->getTraceAsString()
+                    ]);
+
+                    // Check if we should retry or mark as permanently failed
+                    $retryAttempts = $scheduledEmail->retry_attempts ?? 0;
+                    
+                    if ($retryAttempts < $this->maxRetryAttempts) {
+                        // Increment retry attempts and set status back to pending with a delay
+                        $retryDelay = $this->calculateRetryDelay($retryAttempts);
+                        $nextAttemptAt = now()->addMinutes($retryDelay);
+                        
+                        if (!$scheduledEmail->update([
+                            'status' => 'pending',
+                            'scheduled_at' => $nextAttemptAt,
+                            'retry_attempts' => $retryAttempts + 1,
+                            'error' => $e->getMessage(),
+                        ])) {
+                            Log::error('Failed to update email for retry', [
+                                'uuid' => $scheduledEmail->uuid,
+                                'id' => $scheduledEmail->id
+                            ]);
+                        }
+                        
+                        Log::warning('Scheduled email failed, will retry', [
+                            'uuid' => $scheduledEmail->uuid,
+                            'id' => $scheduledEmail->id,
+                            'retry_attempt' => $retryAttempts + 1,
+                            'next_attempt_at' => $nextAttemptAt,
+                            'error' => $e->getMessage(),
+                        ]);
+                    } else {
+                        // Max retries reached, mark as permanently failed
+                        if (!$scheduledEmail->update([
+                            'status' => 'failed',
+                            'error' => $e->getMessage(),
+                        ])) {
+                            Log::error('Failed to mark email as permanently failed', [
+                                'uuid' => $scheduledEmail->uuid,
+                                'id' => $scheduledEmail->id
+                            ]);
+                        }
+
+                        Log::error('Failed to send scheduled email after max retries', [
+                            'uuid' => $scheduledEmail->uuid,
+                            'id' => $scheduledEmail->id,
+                            'retry_attempts' => $retryAttempts,
+                            'error' => $e->getMessage(),
+                            'trace' => $e->getTraceAsString(),
+                        ]);
+                    }
                 }
             }
+            Log::info('Finished processing scheduled emails');
+        } catch (\Exception $e) {
+            Log::error('Failed to process scheduled emails job', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            throw $e; // Re-throw to ensure the job is marked as failed
         }
     }
     
@@ -249,5 +339,24 @@ class ProcessScheduledEmailsJob implements ShouldQueue
         $maxDelay = Config::get('advanced_email.scheduling.retry.max_delay', 120);
         
         return min($delay, $maxDelay);
+    }
+
+    /**
+     * Convert an array to an object recursively.
+     *
+     * @param array $array
+     * @return object
+     */
+    protected function arrayToObject(array $array): object
+    {
+        $obj = new \stdClass();
+        foreach ($array as $key => $val) {
+            if (is_array($val)) {
+                $obj->$key = $this->arrayToObject($val);
+            } else {
+                $obj->$key = $val;
+            }
+        }
+        return $obj;
     }
 }

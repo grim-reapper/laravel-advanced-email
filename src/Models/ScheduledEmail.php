@@ -5,6 +5,7 @@ namespace GrimReapper\AdvancedEmail\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Log;
 
 class ScheduledEmail extends Model
 {
@@ -102,23 +103,44 @@ class ScheduledEmail extends Model
      */
     public function isReadyToSend(): bool
     {
-        // Check if the email is pending and scheduled time has passed
+        // Check if the email is pending
         if ($this->status !== 'pending') {
-            return false;
-        }
-
-        if ($this->scheduled_at->isFuture()) {
+            Log::info('Email is not in pending status', [
+                'id' => $this->id,
+                'uuid' => $this->uuid,
+                'status' => $this->status
+            ]);
             return false;
         }
 
         // Check if the email has expired
         if ($this->expires_at && $this->expires_at->isPast()) {
+            Log::info('Email has expired', [
+                'id' => $this->id,
+                'uuid' => $this->uuid,
+                'expires_at' => $this->expires_at
+            ]);
             $this->update(['status' => 'cancelled']);
+            return false;
+        }
+
+        // Check if scheduled time has passed
+        if ($this->scheduled_at->isFuture()) {
+            Log::info('Email scheduled time has not arrived yet', [
+                'id' => $this->id,
+                'uuid' => $this->uuid,
+                'scheduled_at' => $this->scheduled_at
+            ]);
             return false;
         }
 
         // Check conditions if any
         if (!$this->evaluateConditions()) {
+            Log::info('Email conditions not met', [
+                'id' => $this->id,
+                'uuid' => $this->uuid,
+                'conditions' => $this->conditions
+            ]);
             return false;
         }
 

@@ -120,7 +120,13 @@ class EmailService implements EmailBuilderContract
         if (!$this->scheduledAt) {
             throw new \InvalidArgumentException('Scheduled time must be set using schedule() method');
         }
-
+        if (empty($this->from)) {
+            $defaultFrom = config('mail.from', ['address' => null, 'name' => null]);
+            $this->from = [
+                'address' => $defaultFrom['address'] ?? null,
+                'name' => $defaultFrom['name'] ?? null
+            ];
+        }
         // Create the scheduled email record
         $scheduledEmail = new ScheduledEmail([
             'uuid' => (string) Str::uuid(),
@@ -184,6 +190,13 @@ class EmailService implements EmailBuilderContract
     public function from(string $address, ?string $name = null): static
     {
         $this->from = ['address' => $address, 'name' => $name];
+        if (empty($this->from)) {
+            $defaultFrom = config('mail.from', ['address' => null, 'name' => null]);
+            $this->from = [
+                'address' => $defaultFrom['address'] ?? null,
+                'name' => $defaultFrom['name'] ?? null
+            ];
+        }
         return $this;
     }
 
@@ -354,7 +367,7 @@ class EmailService implements EmailBuilderContract
     {
         // If scheduled for future, store in database instead of sending immediately
         if ($this->scheduledAt && $this->scheduledAt > now()) {
-            $this->schedule();
+            $this->schedule($this->scheduledAt);
             return;
         }
         
@@ -417,37 +430,18 @@ class EmailService implements EmailBuilderContract
                 'logUuid' => $logUuid,
                 'exception' => $e
             ]);
-            Event::dispatch(new EmailFailed(array_merge($eventData, ['exception' => $e])));
+            Event::dispatch(new EmailFailed($eventData, $e));
             throw $e;
         } finally {
             $this->resetState();
         }
-    }
-    
-    /**
-     * Dispatch the email job for immediate sending.
-     *
-     * @param Mailable $mailable The mailable to be sent
-     * @return void
-     */
-    protected function dispatchJob(Mailable $mailable): void
-    {
-        // Generate a UUID for logging purposes
-        $logUuid = (string) Str::uuid();
-        
-        // Create and dispatch the job
-        $job = new SendEmailJob($mailable, $this->mailerName, $logUuid);
-        dispatch($job);
-        
-        // Reset the email builder state after sending
-        $this->resetState();
     }
 
     public function queue(?string $connection = null, ?string $queue = null): void
     {
         // If scheduled for future, store in database instead of queueing immediately
         if ($this->scheduledAt && $this->scheduledAt > now()) {
-            $this->schedule();
+            $this->schedule($this->scheduledAt);
             return;
         }
         
@@ -456,7 +450,6 @@ class EmailService implements EmailBuilderContract
         // We generate the UUID here and pass it to the job.
         // The job will be responsible for including it in the log data when it runs.
         $logUuid = (string) Str::uuid();
-
         // Create initial log entry in the database before building the mailable
         $logEntry = \GrimReapper\AdvancedEmail\Models\EmailLog::create([
             'uuid' => $logUuid,
