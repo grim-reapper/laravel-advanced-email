@@ -12,7 +12,8 @@ class ProcessedTemplateData
         public ?string $subject,
         public ?string $htmlBody,
         public bool $isFromDatabase,
-        public ?string $loadedTemplateName // To store the name of the template that was actually loaded
+        public ?string $loadedTemplateName, // To store the name of the template that was actually loaded
+        public ?array $emailConfig = null // Email configuration from template version
     ) {}
 }
 
@@ -26,6 +27,9 @@ class TemplateProcessor
     // Properties to hold original subject/html if not using a DB template
     protected ?string $directSubject = null;
     protected ?string $directHtmlContent = null;
+    
+    // Property to store the loaded template version for email configuration access
+    protected ?EmailTemplateVersion $loadedTemplateVersion = null;
 
     public function __construct()
     {
@@ -50,8 +54,11 @@ class TemplateProcessor
     public function setDirectHtmlContent(?string $html): static
     {
         $this->directHtmlContent = $html;
-        $this->templateName = null; // Direct HTML overrides DB template
-        $this->isContentFromDatabaseTemplate = false;
+        // Only override template if HTML content is actually provided
+        if ($html !== null) {
+            $this->templateName = null; // Direct HTML overrides DB template
+            $this->isContentFromDatabaseTemplate = false;
+        }
         return $this;
     }
 
@@ -73,6 +80,154 @@ class TemplateProcessor
     public function getPlaceholders(): array
     {
         return $this->placeholders;
+    }
+
+    /**
+     * Get email configuration from the loaded template version.
+     * 
+     * Returns the email configuration from the currently loaded template version,
+     * or null if no template is loaded or no email configuration exists.
+     * 
+     * @return array|null Email configuration array or null if not available
+     */
+    public function getEmailConfiguration(): ?array
+    {
+        if (!$this->loadedTemplateVersion) {
+            return null;
+        }
+
+        return $this->loadedTemplateVersion->getEmailConfiguration();
+    }
+
+    /**
+     * Parse email list from various formats (string, array, or null).
+     *
+     * @param mixed $emailData
+     * @return array
+     */
+    protected function parseEmailList($emailData): array
+    {
+        if (empty($emailData)) {
+            return [];
+        }
+
+        if (is_array($emailData)) {
+            return array_filter(array_map('trim', $emailData));
+        }
+
+        if (is_string($emailData)) {
+            // Handle comma-separated string format
+            return array_filter(array_map('trim', explode(',', $emailData)));
+        }
+
+        return [];
+    }
+
+    /**
+     * Get the loaded template version instance.
+     *
+     * @return EmailTemplateVersion|null
+     */
+    public function getLoadedTemplateVersion(): ?EmailTemplateVersion
+    {
+        return $this->loadedTemplateVersion;
+    }
+
+    /**
+     * Validate and get email configuration from template version.
+     * 
+     * Extracts email configuration from the template version and validates it.
+     * Invalid email addresses are logged and excluded from the result.
+     * Returns sanitized configuration with only valid email addresses.
+     * 
+     * @param EmailTemplateVersion $templateVersion The template version to extract config from
+     * @return array|null Validated email configuration or null if invalid/empty
+     */
+    protected function validateAndGetEmailConfiguration(EmailTemplateVersion $templateVersion): ?array
+    {
+        try {
+            $emailConfig = $templateVersion->getEmailConfiguration();
+            
+            if (!$emailConfig) {
+                return null;
+            }
+
+            // Validate email configuration using the model's validation
+            $validator = EmailTemplateVersion::validateEmailConfig($emailConfig);
+            
+            if ($validator->fails()) {
+                Log::warning("Invalid email configuration in template version", [
+                    'template_name' => $this->templateName,
+                    'template_version_id' => $templateVersion->id,
+                    'validation_errors' => $validator->errors()->toArray()
+                ]);
+                
+                // Return sanitized configuration with only valid fields
+                return $this->sanitizeEmailConfiguration($emailConfig);
+            }
+
+            return $emailConfig;
+            
+        } catch (\Exception $e) {
+            Log::error("Error validating email configuration for template", [
+                'template_name' => $this->templateName,
+                'template_version_id' => $templateVersion->id ?? null,
+                'error' => $e->getMessage()
+            ]);
+            
+            return null;
+        }
+    }
+
+    /**
+     * Sanitize email configuration by removing invalid entries.
+     *
+     * @param array $emailConfig
+     * @return array
+     */
+    protected function sanitizeEmailConfiguration(array $emailConfig): array
+    {
+        $sanitized = [];
+
+        // Validate and sanitize individual email addresses
+        if (!empty($emailConfig['from_email']) && filter_var($emailConfig['from_email'], FILTER_VALIDATE_EMAIL)) {
+            $sanitized['from_email'] = $emailConfig['from_email'];
+        }
+
+        if (!empty($emailConfig['from_name']) && is_string($emailConfig['from_name'])) {
+            $sanitized['from_name'] = $emailConfig['from_name'];
+        }
+
+        if (!empty($emailConfig['reply_to_email']) && filter_var($emailConfig['reply_to_email'], FILTER_VALIDATE_EMAIL)) {
+            $sanitized['reply_to_email'] = $emailConfig['reply_to_email'];
+        }
+
+        if (!empty($emailConfig['reply_to_name']) && is_string($emailConfig['reply_to_name'])) {
+            $sanitized['reply_to_name'] = $emailConfig['reply_to_name'];
+        }
+
+        // Sanitize email arrays
+        foreach (['to_email', 'cc_email', 'bcc_email'] as $field) {
+            if (!empty($emailConfig[$field]) && is_array($emailConfig[$field])) {
+                $validEmails = array_filter($emailConfig[$field], function($email) {
+                    return !empty($email) && filter_var(trim($email), FILTER_VALIDATE_EMAIL);
+                });
+                
+                if (!empty($validEmails)) {
+                    $sanitized[$field] = array_values($validEmails);
+                }
+            }
+        }
+
+        if (!empty($sanitized)) {
+            Log::info("Email configuration sanitized", [
+                'template_name' => $this->templateName,
+                'original_fields' => array_keys($emailConfig),
+                'sanitized_fields' => array_keys($sanitized)
+            ]);
+        }
+
+        return $sanitized;
     }
 
     public function registerPattern(string $pattern, ?callable $callback = null): static
@@ -123,6 +278,10 @@ class TemplateProcessor
         // It will be updated if a DB template load attempt is made.
         $finalIsFromDb = false; 
         $loadedTemplateName = null;
+        $emailConfig = null;
+
+        // Reset the loaded template version
+        $this->loadedTemplateVersion = null;
 
         if ($this->templateName) {
             try {
@@ -130,6 +289,10 @@ class TemplateProcessor
                 $activeVersion = $template->activeVersion;
 
                 if ($activeVersion) {
+                    
+                    // Store the loaded template version for email configuration access
+                    $this->loadedTemplateVersion = $activeVersion;
+                    
                     $loadedTemplateName = $this->templateName;
                     // Template subject overrides direct subject only if direct subject wasn't set AFTER template()
                     // Or, more simply, template subject is default, direct subject is override.
@@ -139,6 +302,10 @@ class TemplateProcessor
                     
                     // Placeholders from template are defaults, those added via with() are merged (and override)
                     $this->placeholders = array_merge($activeVersion->placeholders ?? [], $this->placeholders);
+                    
+                    // Get email configuration from the template version with validation
+                    $emailConfig = $this->validateAndGetEmailConfiguration($activeVersion);
+                    
                     $finalIsFromDb = true; // Content is successfully from DB
                 } else {
                     Log::warning("No active version found for email template: {$this->templateName}");
@@ -153,7 +320,7 @@ class TemplateProcessor
         $processedSubject = $this->applyPlaceholders($currentSubject);
         $processedHtmlBody = $this->applyPlaceholders($currentHtmlBody);
 
-        return new ProcessedTemplateData($processedSubject, $processedHtmlBody, $finalIsFromDb, $loadedTemplateName);
+        return new ProcessedTemplateData($processedSubject, $processedHtmlBody, $finalIsFromDb, $loadedTemplateName, $emailConfig);
     }
 
     public function reset(): void
@@ -166,5 +333,6 @@ class TemplateProcessor
         $this->isContentFromDatabaseTemplate = false;
         $this->directHtmlContent = null;
         $this->directSubject = null;
+        $this->loadedTemplateVersion = null;
     }
 }

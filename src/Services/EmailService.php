@@ -50,6 +50,7 @@ class EmailService implements EmailBuilderContract
     protected ?string $mailerName = null;
     protected TemplateProcessor $templateProcessor; // New property
     protected ?string $processedDbTemplateName = null; // New property for logging
+    protected ?string $processedHtmlContent = null; // Processed HTML content for logging
     
     // Scheduling properties
     protected ?\DateTime $scheduledAt = null;
@@ -76,8 +77,16 @@ class EmailService implements EmailBuilderContract
 
     /**
      * Set the email template to use by its unique name.
-     *
-     * @param string $templateName The unique name of the email template.
+     * 
+     * Loads the active version of the specified template and applies its configuration.
+     * Template configuration includes:
+     * - Subject and HTML content
+     * - Email configuration (from, to, cc, bcc, reply-to)
+     * - Placeholder values
+     * 
+     * Method-level configuration will override template configuration.
+     * 
+     * @param string $templateName The unique name of the email template
      * @return static
      */
     public function template(string $templateName): static
@@ -145,7 +154,7 @@ class EmailService implements EmailBuilderContract
             'subject' => $this->subject,
             'template_name' => $this->processedDbTemplateName,
             'view' => $this->view,
-            'html_content' => $this->htmlContent,
+            'html_content' => $this->getHtmlContentForLogging(),
             'view_data' => $this->viewData,
             'placeholders' => $this->templateProcessor->getPlaceholders(),
             'attachments' => $this->prepareAttachmentsForStorage(),
@@ -374,7 +383,13 @@ class EmailService implements EmailBuilderContract
         // Generate a UUID for logging purposes
         $logUuid = (string) Str::uuid();
 
-        // Create initial log entry in the database before building the mailable
+        // Build mailable first to process template and get final subject/content
+        $mailable = $this->buildMailable($logUuid);
+        
+        // Validate email configuration after template processing
+        $this->validateEmailConfiguration();
+
+        // Create log entry after template processing with complete data
         $logEntry = \GrimReapper\AdvancedEmail\Models\EmailLog::create([
             'uuid' => $logUuid,
             'status' => 'pending', // Initial status
@@ -382,11 +397,11 @@ class EmailService implements EmailBuilderContract
             'from' => $this->from,
             'to' => $this->formatRecipients($this->to),
             'cc' => $this->formatRecipients($this->cc),
-            'bcc' => $this->bcc,
-            'subject' => $this->subject,
+            'bcc' => $this->formatRecipients($this->bcc),
+            'subject' => $this->subject, // Now has the processed subject from template
             'template_name' => $this->processedDbTemplateName,
             'view' => $this->view,
-            'html_content' => $this->htmlContent,
+            'html_content' => $this->getHtmlContentForLogging(),
             'view_data' => $this->viewData,
             'placeholders' => $this->templateProcessor->getPlaceholders(),
             'attachments' => $this->prepareAttachmentsForStorage(),
@@ -394,8 +409,6 @@ class EmailService implements EmailBuilderContract
             'scheduled_at' => $this->scheduledAt, // Include scheduled_at for consistency, even if null
             'expires_at' => $this->expiresAt, // Include expires_at for consistency, even if null
         ]);
-
-        $mailable = $this->buildMailable($logUuid);
         
         // Prepare event data
         $eventData = [
@@ -409,7 +422,7 @@ class EmailService implements EmailBuilderContract
             'subject' => $this->subject,
             'template_name' => $this->processedDbTemplateName,
             'view' => $this->view,
-            'html_content' => $this->htmlContent,
+            'html_content' => $this->getHtmlContentForLogging(),
             'view_data' => $this->viewData,
             'placeholders' => $this->templateProcessor->getPlaceholders(),
             'attachments' => $this->prepareAttachmentsForStorage(),
@@ -450,7 +463,14 @@ class EmailService implements EmailBuilderContract
         // We generate the UUID here and pass it to the job.
         // The job will be responsible for including it in the log data when it runs.
         $logUuid = (string) Str::uuid();
-        // Create initial log entry in the database before building the mailable
+        
+        // Build mailable first to process template and get final subject/content
+        $mailable = $this->buildMailable($logUuid);
+        
+        // Validate email configuration after template processing
+        $this->validateEmailConfiguration();
+        
+        // Create log entry after template processing with complete data
         $logEntry = \GrimReapper\AdvancedEmail\Models\EmailLog::create([
             'uuid' => $logUuid,
             'status' => 'pending', // Initial status
@@ -458,11 +478,11 @@ class EmailService implements EmailBuilderContract
             'from' => $this->from,
             'to' => $this->formatRecipients($this->to),
             'cc' => $this->formatRecipients($this->cc),
-            'bcc' => $this->bcc,
-            'subject' => $this->subject,
+            'bcc' => $this->formatRecipients($this->bcc),
+            'subject' => $this->subject, // Now has the processed subject from template
             'template_name' => $this->processedDbTemplateName,
             'view' => $this->view,
-            'html_content' => $this->htmlContent,
+            'html_content' => $this->getHtmlContentForLogging(),
             'view_data' => $this->viewData,
             'placeholders' => $this->templateProcessor->getPlaceholders(),
             'attachments' => $this->prepareAttachmentsForStorage(),
@@ -470,8 +490,6 @@ class EmailService implements EmailBuilderContract
             'scheduled_at' => $this->scheduledAt, // Include scheduled_at for consistency, even if null
             'expires_at' => $this->expiresAt, // Include expires_at for consistency, even if null
         ]);
-
-        $mailable = $this->buildMailable($logUuid);
 
         // Pass the logUuid and selectedAbVariantId to the job
         $job = new SendEmailJob($mailable, $this->mailerName, $logUuid);
@@ -492,13 +510,20 @@ protected function buildMailable(?string $logUuid = null): Mailable
 {
     // 1. Pass current EmailService state (direct subject/HTML) to TemplateProcessor
     //    This ensures TemplateProcessor knows about any subject() or html() calls.
-    $this->templateProcessor->setDirectSubject($this->subject);
-    $this->templateProcessor->setDirectHtmlContent($this->htmlContent);
+    if ($this->subject !== null) {
+        $this->templateProcessor->setDirectSubject($this->subject);
+    }
+    if ($this->htmlContent !== null) {
+        $this->templateProcessor->setDirectHtmlContent($this->htmlContent);
+    }
 
     // 2. Process template (loads from DB if name set, applies placeholders to subject/body)
     $processedData = $this->templateProcessor->loadAndProcess();
     
-    // 3. Update EmailService's own subject and processedDbTemplateName for logging/consistency.
+    // 3. Apply template email configuration (method-level config takes precedence)
+    $this->applyTemplateEmailConfiguration($processedData->emailConfig);
+    
+    // 4. Update EmailService's own subject and processedDbTemplateName for logging/consistency.
     //    The $this->subject property will now hold the definitive subject for this email send.
     $currentSubject = $processedData->subject; 
     $this->subject = $currentSubject; 
@@ -507,7 +532,7 @@ protected function buildMailable(?string $logUuid = null): Mailable
     $finalHtmlBody = $processedData->htmlBody;
     $isFromDbRenderingFlag = $processedData->isFromDatabase;
 
-    // 4. If a Blade view file was specified ($this->view is not null), it overrides HTML body.
+    // 5. If a Blade view file was specified ($this->view is not null), it overrides HTML body.
     if ($this->view) {
         try {
             // Pass viewData from EmailService and any globally added placeholders from TemplateProcessor.
@@ -519,7 +544,10 @@ protected function buildMailable(?string $logUuid = null): Mailable
         }
     }
     
-    // 5. Instantiate GenericMailable and set basic properties
+    // Store processed HTML content for logging purposes
+    $this->processedHtmlContent = $finalHtmlBody;
+    
+    // 6. Instantiate GenericMailable and set basic properties
     $mailable = new GenericMailable();
     if ($this->from) {
         $mailable->from($this->from['address'], $this->from['name']);
@@ -533,12 +561,21 @@ protected function buildMailable(?string $logUuid = null): Mailable
         $mailable->subject($currentSubject);
     }
     
-    // 6. Attachments
+    // Apply reply-to configuration from template if available
+    if ($processedData->emailConfig && 
+        ($processedData->emailConfig['reply_to_email'] || $processedData->emailConfig['reply_to_name'])) {
+        $mailable->replyTo(
+            $processedData->emailConfig['reply_to_email'], 
+            $processedData->emailConfig['reply_to_name']
+        );
+    }
+    
+    // 7. Attachments
     if ($this->attachmentManager->hasAttachments()) {
         $this->attachmentManager->attachToMailable($mailable);
     }
 
-    // 7. Process and set HTML content for the mailable
+    // 8. Process and set HTML content for the mailable
     if ($finalHtmlBody) {
         try {
             libxml_use_internal_errors(true);
@@ -596,12 +633,19 @@ protected function buildMailable(?string $logUuid = null): Mailable
     public function preview(): void
     {
         // 1. Pass current EmailService state (direct subject/HTML) to TemplateProcessor
-        $this->templateProcessor->setDirectSubject($this->subject);
-        $this->templateProcessor->setDirectHtmlContent($this->htmlContent);
+        if ($this->subject !== null) {
+            $this->templateProcessor->setDirectSubject($this->subject);
+        }
+        if ($this->htmlContent !== null) {
+            $this->templateProcessor->setDirectHtmlContent($this->htmlContent);
+        }
         // Placeholders are already managed by templateProcessor via with()
 
         // 2. Process template (loads from DB if name set, applies placeholders to subject/body)
         $processedData = $this->templateProcessor->loadAndProcess();
+        
+        // 3. Apply template email configuration for consistency (though not used in preview output)
+        $this->applyTemplateEmailConfiguration($processedData->emailConfig);
         
         // Update EmailService's subject and processedDbTemplateName for context (e.g. error logging)
         // Although subject isn't directly outputted in preview, having it processed is consistent.
@@ -611,7 +655,7 @@ protected function buildMailable(?string $logUuid = null): Mailable
         $finalHtmlBody = $processedData->htmlBody;
         $isFromDbRenderingFlag = $processedData->isFromDatabase;
 
-        // 3. If a Blade view file was specified, it overrides HTML body.
+        // 4. If a Blade view file was specified, it overrides HTML body.
         if ($this->view) {
             try {
                 // Pass combined viewData (from EmailService) and placeholders (from TemplateProcessor) to the view.
@@ -624,7 +668,7 @@ protected function buildMailable(?string $logUuid = null): Mailable
             }
         }
         
-        // 4. Process and output HTML content
+        // 5. Process and output HTML content
         if ($finalHtmlBody) {
             try {
                 // Ensure HTML structure (though less critical for echo than for mailable)
@@ -676,6 +720,275 @@ protected function buildMailable(?string $logUuid = null): Mailable
         }
     }
 
+    /**
+     * Validate email address format.
+     *
+     * @param string $email
+     * @return bool
+     */
+    protected function isValidEmail(string $email): bool
+    {
+        return filter_var(trim($email), FILTER_VALIDATE_EMAIL) !== false;
+    }
+
+    /**
+     * Get HTML content for logging purposes.
+     * Returns processed HTML content from template or direct HTML content.
+     *
+     * @return string|null
+     */
+    protected function getHtmlContentForLogging(): ?string
+    {
+        return $this->processedHtmlContent ?: $this->htmlContent;
+    }
+
+    /**
+     * Validate and sanitize email list.
+     * Handles both simple email arrays and object arrays with address/name.
+     *
+     * @param array $emails
+     * @param string $fieldName
+     * @return array
+     */
+    protected function validateEmailList(array $emails, string $fieldName): array
+    {
+        $validEmails = [];
+        $invalidEmails = [];
+
+        foreach ($emails as $emailData) {
+            if (empty($emailData)) {
+                continue;
+            }
+
+            // Handle object format: ['address' => 'email', 'name' => 'name']
+            if (is_array($emailData) && isset($emailData['address'])) {
+                $email = trim($emailData['address']);
+                if ($this->isValidEmail($email)) {
+                    $validEmails[] = $emailData; // Keep the full object
+                } else {
+                    $invalidEmails[] = $email;
+                }
+            } 
+            // Handle simple string format: 'email@example.com'
+            elseif (is_string($emailData)) {
+                $trimmedEmail = trim($emailData);
+                if ($this->isValidEmail($trimmedEmail)) {
+                    $validEmails[] = $trimmedEmail;
+                } else {
+                    $invalidEmails[] = $trimmedEmail;
+                }
+            }
+        }
+
+        if (!empty($invalidEmails)) {
+            Log::warning("Invalid email addresses found in template configuration", [
+                'template_name' => $this->processedDbTemplateName,
+                'field' => $fieldName,
+                'invalid_emails' => $invalidEmails,
+                'valid_emails_count' => count($validEmails)
+            ]);
+        }
+
+        return $validEmails;
+    }
+
+    /**
+     * Apply template email configuration to the EmailService.
+     * 
+     * Merges template-level email configuration with current service state.
+     * Method-level configuration (e.g., ->to(), ->from()) takes precedence over template configuration.
+     * 
+     * Configuration priority (highest to lowest):
+     * 1. Method-level calls (->to(), ->cc(), ->from(), etc.)
+     * 2. Template version configuration (database fields)
+     * 3. Default configuration (config files)
+     * 
+     * @param array|null $templateConfig Email configuration from template version
+     * @return void
+     */
+    protected function applyTemplateEmailConfiguration(?array $templateConfig): void
+    {
+        if (!$templateConfig) {
+            return;
+        }
+
+        try {
+            // Apply sender configuration only if not already set via method calls
+            // Method-level configuration takes precedence over template configuration
+            if (empty($this->from) && ($templateConfig['from_email'] || $templateConfig['from_name'])) {
+                $fromEmail = $templateConfig['from_email'];
+                
+                // Validate from email format before applying
+                if ($fromEmail && !$this->isValidEmail($fromEmail)) {
+                    Log::warning("Invalid from_email in template configuration", [
+                        'template_name' => $this->processedDbTemplateName,
+                        'from_email' => $fromEmail
+                    ]);
+                    // Fallback to default configuration for invalid email
+                    $defaultFrom = config('advanced_email.from', config('mail.from', ['address' => null, 'name' => null]));
+                    $this->from = [
+                        'address' => $defaultFrom['address'],
+                        'name' => $defaultFrom['name']
+                    ];
+                } else {
+                    $this->from = [
+                        'address' => $fromEmail,
+                        'name' => $templateConfig['from_name']
+                    ];
+                }
+            }
+
+            // Apply recipient configuration only if not already set via method calls
+            // Each email object contains 'address' and optional 'name' fields
+            if (empty($this->to) && !empty($templateConfig['to_email'])) {
+                foreach ($templateConfig['to_email'] as $emailObj) {
+                    if (is_array($emailObj) && isset($emailObj['address'])) {
+                        $this->to($emailObj['address'], $emailObj['name'] ?? null);
+                    }
+                }
+            }
+
+            if (empty($this->cc) && !empty($templateConfig['cc_email'])) {
+                foreach ($templateConfig['cc_email'] as $emailObj) {
+                    if (is_array($emailObj) && isset($emailObj['address'])) {
+                        $this->cc($emailObj['address'], $emailObj['name'] ?? null);
+                    }
+                }
+            }
+
+            if (empty($this->bcc) && !empty($templateConfig['bcc_email'])) {
+                foreach ($templateConfig['bcc_email'] as $emailObj) {
+                    if (is_array($emailObj) && isset($emailObj['address'])) {
+                        $this->bcc($emailObj['address'], $emailObj['name'] ?? null);
+                    }
+                }
+            }
+
+        } catch (\Exception $e) {
+            Log::error('Failed to apply template email configuration', [
+                'template_name' => $this->processedDbTemplateName,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            // Apply fallback configuration to ensure email can still be sent
+            $this->applyFallbackEmailConfiguration();
+        }
+    }
+
+    /**
+     * Apply fallback email configuration when template configuration fails.
+     *
+     * @return void
+     */
+    protected function applyFallbackEmailConfiguration(): void
+    {
+        try {
+            // Ensure we have a from address
+            if (empty($this->from)) {
+                $defaultFrom = config('advanced_email.from', config('mail.from', ['address' => null, 'name' => null]));
+                if ($defaultFrom['address']) {
+                    $this->from = [
+                        'address' => $defaultFrom['address'],
+                        'name' => $defaultFrom['name']
+                    ];
+                    Log::info('Applied fallback from configuration', [
+                        'template_name' => $this->processedDbTemplateName,
+                        'from_address' => $defaultFrom['address']
+                    ]);
+                }
+            }
+        } catch (\Exception $e) {
+            Log::error('Failed to apply fallback email configuration', [
+                'template_name' => $this->processedDbTemplateName,
+                'error' => $e->getMessage()
+            ]);
+        }
+    }
+
+    /**
+     * Validate email configuration before sending.
+     *
+     * @return void
+     * @throws \InvalidArgumentException
+     */
+    protected function validateEmailConfiguration(): void
+    {
+        $errors = [];
+
+        // Validate recipients
+        if (empty($this->to)) {
+            $errors[] = 'At least one recipient (to) is required';
+        }
+
+        // Validate from address
+        if (empty($this->from) || empty($this->from['address'])) {
+            // Try to apply default from configuration
+            $defaultFrom = config('advanced_email.from', config('mail.from', ['address' => null, 'name' => null]));
+            if ($defaultFrom['address']) {
+                $this->from = [
+                    'address' => $defaultFrom['address'],
+                    'name' => $defaultFrom['name']
+                ];
+                Log::info('Applied default from configuration for email validation', [
+                    'template_name' => $this->processedDbTemplateName,
+                    'from_address' => $defaultFrom['address']
+                ]);
+            } else {
+                $errors[] = 'From address is required';
+            }
+        }
+
+        // Validate from email format
+        if (!empty($this->from['address']) && !$this->isValidEmail($this->from['address'])) {
+            $errors[] = 'From address must be a valid email format';
+        }
+
+        // Validate recipient email formats
+        foreach ($this->to as $recipient) {
+            if (!$this->isValidEmail($recipient['address'])) {
+                $errors[] = "Invalid recipient email: {$recipient['address']}";
+            }
+        }
+
+        foreach ($this->cc as $recipient) {
+            if (!$this->isValidEmail($recipient['address'])) {
+                $errors[] = "Invalid CC email: {$recipient['address']}";
+            }
+        }
+
+        foreach ($this->bcc as $recipient) {
+            if (!$this->isValidEmail($recipient['address'])) {
+                $errors[] = "Invalid BCC email: {$recipient['address']}";
+            }
+        }
+
+        // Validate subject
+        if (empty($this->subject) && empty($this->view) && empty($this->htmlContent) && !$this->templateProcessor->getTemplateName()) {
+            $errors[] = 'Subject is required when no template, view, or HTML content is provided';
+        }
+
+        // Validate content
+        if (empty($this->view) && empty($this->htmlContent) && !$this->templateProcessor->getTemplateName()) {
+            $errors[] = 'Email content is required (template, view, or HTML content)';
+        }
+
+        if (!empty($errors)) {
+            $errorMessage = 'Email validation failed: ' . implode(', ', $errors);
+            
+            Log::error('Email validation failed', [
+                'template_name' => $this->processedDbTemplateName,
+                'errors' => $errors,
+                'from' => $this->from,
+                'to_count' => count($this->to),
+                'cc_count' => count($this->cc),
+                'bcc_count' => count($this->bcc)
+            ]);
+            
+            throw new \InvalidArgumentException($errorMessage);
+        }
+    }
+
     protected function prepareLogData(Mailable $mailable, ?string $logUuid = null): array // Add logUuid parameter
     {
         // This method gathers data *before* sending for logging purposes
@@ -694,7 +1007,7 @@ protected function buildMailable(?string $logUuid = null): Mailable
             'subject' => $this->subject, // This is the final subject after potential processing
             'template_name' => $this->processedDbTemplateName, // Log the name of the DB template if one was used
             'view' => $this->view,
-            'html_content' => $this->htmlContent, // This is the original HTML input if any
+            'html_content' => $this->getHtmlContentForLogging(), // This is the original HTML input if any
             'view_data' => !empty($this->viewData) ? json_encode($this->viewData) : null,
             'placeholders' => !empty($this->templateProcessor->getPlaceholders()) ? json_encode($this->templateProcessor->getPlaceholders()) : null,
             'attachments' => !empty($this->attachmentManager->prepareForStorage()) ? json_encode($this->attachmentManager->prepareForStorage()) : null,
@@ -806,6 +1119,7 @@ protected function buildMailable(?string $logUuid = null): Mailable
         $this->viewData = [];
         $this->htmlContent = null; 
         $this->processedDbTemplateName = null;
+        $this->processedHtmlContent = null;
 
         $this->attachmentManager->reset();
         // It's good practice to check if $templateProcessor is set, 
