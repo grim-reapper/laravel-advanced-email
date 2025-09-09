@@ -21,6 +21,7 @@ class GenericMailable extends Mailable
     public array $dynamicAttachments = [];
     public array $dynamicRawAttachments = [];
     public array $dynamicStorageAttachments = [];
+    public array $dynamicHeaders = [];
 
     /**
      * Create a new message instance.
@@ -30,6 +31,68 @@ class GenericMailable extends Mailable
     public function __construct()
     {
         // Constructor can be used for dependency injection if needed later
+    }
+
+    /**
+     * Set custom headers for this mailable.
+     *
+     * @param array $headers
+     * @return $this
+     */
+    public function setCustomHeaders(array $headers)
+    {
+        $this->dynamicHeaders = $headers;
+        return $this;
+    }
+
+    /**
+     * Callback executed after the message is created.
+     * This supports both Swift (Laravel <9) and Symfony (Laravel 9+) messages.
+     *
+     * @param mixed $message \Swift_Message or \Symfony\Component\Mime\Email
+     * @return void
+     */
+    protected function afterMake($message)
+    {
+        parent::afterMake($message);
+
+        // Add custom headers AFTER message creation
+        if (!empty($this->dynamicHeaders)) {
+            \Log::info("Adding custom headers via afterMake callback", $this->dynamicHeaders);
+
+            foreach ($this->dynamicHeaders as $key => $value) {
+                try {
+                    // Check if this is a Symfony message (Laravel 9+)
+                    if ($message instanceof \Symfony\Component\Mime\Email) {
+                        $message->getHeaders()->addTextHeader($key, $value);
+                        \Log::info("Symfony after-make header added: {$key} = {$value}");
+
+                        // Verify header was added
+                        $headers = $message->getHeaders();
+                        if ($headers->has($key)) {
+                            $headerValue = $headers->get($key)->getBodyAsString();
+                            \Log::info("Symfony after-make verified header: {$key} = {$headerValue}");
+                        }
+                    }
+                    // Check if this is a Swift message (Laravel <9)
+                    elseif ($message instanceof \Swift_Message) {
+                        $message->getHeaders()->addTextHeader($key, $value);
+                        \Log::info("Swift after-make header added: {$key} = {$value}");
+
+                        // Verify header was added
+                        $headers = $message->getHeaders();
+                        if ($headers->has($key)) {
+                            $headerValue = $headers->get($key)->getFieldBody();
+                            \Log::info("Swift after-make verified header: {$key} = {$headerValue}");
+                        }
+                    } else {
+                        \Log::warning("Unknown message type for headers: " . get_class($message));
+                    }
+                } catch (\Exception $e) {
+                    \Log::error("Failed to add header {$key}: " . $e->getMessage());
+                }
+            }
+        }
     }
 
     /**
@@ -44,16 +107,7 @@ class GenericMailable extends Mailable
         return new Envelope();
     }
 
-    /**
-     * Get the message content definition.
-     *
-     * @return \Illuminate\Mail\Mailables\Content
-     */
-    // public function content(): Content
-    // {
-    //     // Return empty content as we'll handle it in build()
-    //     return new Content(htmlString: ' ');
-    // }
+
 
     /**
      * Get the attachments for the message.
@@ -88,20 +142,29 @@ class GenericMailable extends Mailable
      * Build the message.
      *
      * This method is called by Laravel's mailer.
-     * We override it to apply dynamic properties set by EmailService.
+     * We override it to handle content and add custom headers.
      *
      * @return $this
      */
     public function build(): static
     {
-        // Handle view/HTML content here instead of content() method
+        // Handle view/HTML content (original functionality)
         if (!empty($this->view) && is_string($this->view)) {
             $this->view($this->view, $this->dynamicViewData);
         } elseif (!empty($this->dynamicHtmlContent)) {
-            $html = is_string($this->dynamicHtmlContent) 
-                ? $this->dynamicHtmlContent 
+            $html = is_string($this->dynamicHtmlContent)
+                ? $this->dynamicHtmlContent
                 : $this->dynamicHtmlContent->render();
             $this->html($html);
+        }
+
+        // Add custom headers using Symfony Mailer (Laravel 9+)
+        if (!empty($this->dynamicHeaders)) {
+            $this->withSymfonyMessage(function (\Symfony\Component\Mime\Email $email) {
+                foreach ($this->dynamicHeaders as $key => $value) {
+                    $email->getHeaders()->addTextHeader($key, $value);
+                }
+            });
         }
 
         return $this;

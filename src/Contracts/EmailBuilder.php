@@ -122,6 +122,14 @@ interface EmailBuilder
     public function attachFromStorage(string $disk, string $path, ?string $name = null, array $options = []): static;
 
     /**
+     * Set custom headers for the email.
+     *
+     * @param  array<string, string>  $headers  Associative array of header key-value pairs
+     * @return static
+     */
+    public function headers(array $headers): static;
+
+    /**
      * Schedule the email to be sent at a specific time.
      *
      * @param  \DateTimeInterface|string  $dateTime

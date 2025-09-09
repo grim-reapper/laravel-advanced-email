@@ -51,6 +51,7 @@ class EmailService implements EmailBuilderContract
     protected TemplateProcessor $templateProcessor; // New property
     protected ?string $processedDbTemplateName = null; // New property for logging
     protected ?string $processedHtmlContent = null; // Processed HTML content for logging
+    protected array $headers = [];
     
     // Scheduling properties
     protected ?\DateTime $scheduledAt = null;
@@ -157,6 +158,7 @@ class EmailService implements EmailBuilderContract
             'html_content' => $this->getHtmlContentForLogging(),
             'view_data' => $this->viewData,
             'placeholders' => $this->templateProcessor->getPlaceholders(),
+            'headers' => $this->headers,
             'attachments' => $this->prepareAttachmentsForStorage(),
         ]);
 
@@ -265,7 +267,19 @@ class EmailService implements EmailBuilderContract
         $this->mailerName = $mailer;
         return $this;
     }
-    
+
+    /**
+     * Set custom headers for the email.
+     *
+     * @param array $headers Associative array of header key-value pairs
+     * @return static
+     */
+    public function headers(array $headers): static
+    {
+        $this->headers = array_merge($this->headers, $headers);
+        return $this;
+    }
+
     /**
      * Set placeholder values for the email template.
      *
@@ -549,6 +563,9 @@ protected function buildMailable(?string $logUuid = null): Mailable
     
     // 6. Instantiate GenericMailable and set basic properties
     $mailable = new GenericMailable();
+    if (!empty($this->headers)) {
+        $mailable->setCustomHeaders($this->headers); // Set custom headers
+    }
     if ($this->from) {
         $mailable->from($this->from['address'], $this->from['name']);
     }
@@ -1114,22 +1131,23 @@ protected function buildMailable(?string $logUuid = null): Mailable
         $this->cc = [];
         $this->bcc = [];
         $this->from = null;
-        $this->subject = null; 
+        $this->subject = null;
         $this->view = null;
         $this->viewData = [];
-        $this->htmlContent = null; 
+        $this->htmlContent = null;
         $this->processedDbTemplateName = null;
         $this->processedHtmlContent = null;
 
         $this->attachmentManager->reset();
-        // It's good practice to check if $templateProcessor is set, 
+        // It's good practice to check if $templateProcessor is set,
         // though in current flow it always should be by the time resetState is called.
-        if (isset($this->templateProcessor)) { 
+        if (isset($this->templateProcessor)) {
             $this->templateProcessor->reset();
         }
-        
+
         $this->mailerName = config('mail.default');
-        
+        $this->headers = []; // Reset custom headers
+
         // Reset scheduling properties
         $this->scheduledAt = null;
         $this->expiresAt = null;

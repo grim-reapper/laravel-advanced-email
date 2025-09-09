@@ -153,6 +153,63 @@ Email::to('user@example.com')
     ->send();
 ```
 
+### Custom Headers
+
+You can add custom headers to your emails for specialized use cases like email categorization, tracking, or provider-specific headers.
+
+#### Basic Headers
+```php
+Email::to('recipient@example.com')
+     ->subject('Email with Custom Headers')
+     ->html('<p>This email includes custom headers.</p>')
+     ->headers([
+         'X-Custom-ID' => '123456',
+         'X-Email-Type' => 'newsletter',
+         'X-Campaign-ID' => 'summer-promo-2024'
+     ])
+     ->send();
+```
+
+#### Provider-Specific Headers
+```php
+// Mailgun-specific headers
+Email::to('recipient@example.com')
+     ->subject('Tagged Email')
+     ->html('<p>This email includes Mailgun tags.</p>')
+     ->headers([
+         'X-Mailgun-Tag' => 'newsletter',
+         'List-Unsubscribe' => '<mailto:unsubscribe@example.com>'
+     ])
+     ->send();
+
+// Amazon SES tags
+Email::to('recipient@example.com')
+     ->subject('Campaign Email')
+     ->html('<p>This is a campaign email.</p>')
+     ->headers([
+         'X-SES-MESSAGE-TAGS' => 'campaign=summer,audience=new-users'
+     ])
+     ->send();
+```
+
+#### Tracking and Analytics Headers
+```php
+Email::to('recipient@example.com')
+     ->subject('Tracked Email')
+     ->html('<p>This email is tracked with custom headers.</p>')
+     ->headers([
+         'X-User-ID' => auth()->id(),
+         'X-Source' => 'web-registration',
+         'X-Ab-Test-Variant' => 'A'
+     ])
+     ->send();
+```
+
+**Notes:**
+- Custom headers are included in sent emails unless filtered by your email provider
+- Headers work with both immediate sending and scheduled emails
+- The headers are preserved when scheduling emails for future delivery
+
 ### Adding Attachments
 ```php
 // Attach from file path

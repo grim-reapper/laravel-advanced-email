@@ -5,6 +5,7 @@ This guide provides practical examples for using the Laravel Advanced Email pack
 ## Table of Contents
 
 - [Basic Email Sending](#basic-email-sending)
+- [Custom Headers](#custom-headers)
 - [Working with Templates](#working-with-templates)
 - [Email Scheduling](#email-scheduling)
 - [Recurring Emails](#recurring-emails)
@@ -59,10 +60,122 @@ Email::to('recipient@example.com')
 
 // With specific queue connection and name
 Email::to('recipient@example.com')
-    ->subject('Welcome Aboard')
-    ->view('emails.welcome')
-    ->queue('redis', 'emails');
+     ->subject('Welcome Aboard')
+     ->view('emails.welcome')
+     ->queue('redis', 'emails');
 ```
+
+## Custom Headers
+
+You can add custom headers to your emails for tracking, categorization, or provider-specific features.
+
+### Basic Custom Headers
+
+```php
+Email::to('recipient@example.com')
+     ->subject('Email with Custom Headers')
+     ->html('<p>This email includes custom headers.</p>')
+     ->headers([
+         'X-Custom-ID' => '123456',
+         'X-Email-Type' => 'newsletter',
+         'X-Campaign-ID' => 'summer-promo-2024'
+     ])
+     ->send();
+```
+
+### Headers with Blade Templates
+
+```php
+Email::to('user@example.com')
+     ->subject('Personalized Email')
+     ->view('emails.personalized', ['name' => 'John'])
+     ->headers([
+         'X-User-ID' => 'user-123',
+         'X-Source' => 'web-registration',
+         'X-Template' => 'welcome_v3'
+     ])
+     ->send();
+```
+
+### Provider-Specific Headers
+
+```php
+// Mailgun tags and metadata
+Email::to('recipient@example.com')
+     ->subject('Tagged Newsletter')
+     ->view('emails.newsletter')
+     ->headers([
+         'X-Mailgun-Tag' => 'monthly-newsletter',
+         'X-Mailgun-Campaign-Id' => 'newsletter-oct-2024',
+         'X-Mailgun-Variables' => '{"custom": "value"}'
+     ])
+     ->send();
+
+// Amazon SES tags
+Email::to('recipient@example.com')
+     ->subject('Campaign Email')
+     ->html('<p>This is a campaign email.</p>')
+     ->headers([
+         'X-SES-MESSAGE-TAGS' => 'campaign=product-launch,segment=new-users'
+     ])
+     ->send();
+```
+
+### Headers with Scheduled Emails
+
+Custom headers are preserved when scheduling emails:
+
+```php
+Email::to('subscriber@example.com')
+     ->subject('Scheduled Newsletter')
+     ->template('weekly_newsletter')
+     ->headers([
+         'X-Schedule-ID' => 'newsletter-2024-10',
+         'X-Priority' => 'high',
+         'X-Source' => 'scheduled-batch'
+     ])
+     ->schedule(Carbon::tomorrow()->setHour(9))
+     ->saveScheduled();
+```
+
+### Dynamic Headers from User Data
+
+```php
+$headers = [
+    'X-User-ID' => $user->id,
+    'X-Registration-Date' => $user->created_at->toISOString(),
+    'X-Account-Type' => $user->subscription_type,
+    'X-Source' => request()->header('referer', 'unknown')
+];
+
+Email::to($user->email)
+     ->subject('Welcome to Our Platform')
+     ->view('emails.welcome', ['user' => $user])
+     ->headers($headers)
+     ->send();
+```
+
+### Headers for Email Tracking
+
+```php
+Email::to('customer@example.com')
+     ->subject('Order Confirmation')
+     ->view('emails.order', ['order' => $order])
+     ->headers([
+         'X-Order-ID' => $order->id,
+         'X-Order-Value' => $order->total,
+         'X-Order-Currency' => 'USD',
+         'X-Order-Date' => $order->created_at->toISOString(),
+         'X-Tracking-API' => route('orders.track', $order->tracking_number)
+     ])
+     ->send();
+```
+
+**Important Notes:**
+- Custom headers may be filtered by email providers for security or policy reasons
+- Headers like `X-SMTP-Service-Id` won't appear if your SMTP provider strips them
+- Test with your specific email provider to confirm which headers are supported
+- Headers are case-insensitive but conventionally use `X-` prefix for custom headers
 
 ## Working with Templates
 
